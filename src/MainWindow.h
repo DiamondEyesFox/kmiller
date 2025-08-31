@@ -1,0 +1,48 @@
+#pragma once
+#include <QMainWindow>
+class QAction;
+class QMenu;
+#include <QSplitter>
+#include <QTabWidget>
+#include <QToolBar>
+#include <QAction>
+#include <KFilePlacesView>
+#include <KFilePlacesModel>
+
+class Pane;
+class SettingsDialog;
+
+class MainWindow : public QMainWindow {
+    Q_OBJECT
+public:
+    MainWindow(QWidget *parent=nullptr);
+private slots:
+    void newTab();
+    void closeCurrentTab();
+    void placeActivated(const QUrl &url);
+    void toggleToolbar(bool on);
+    void openPreferences();
+    void setViewIcons();
+    void setViewDetails();
+    void setViewCompact();
+    void setViewMiller();
+    void quickLook();
+private:
+    QAction *actPreviewPane = nullptr;
+
+    QSplitter *splitter;
+    KFilePlacesModel *placesModel;
+    KFilePlacesView *placesView;
+    QWidget *rightContainer;
+    QTabWidget *tabs;
+    QToolBar *tb;
+    QAction *actNewTab;
+    QAction *actCloseTab;
+    QAction *actShowToolbar;
+    QAction *actPrefs;
+    QAction *actQuickLook;
+
+    void addInitialTab(const QUrl &url);
+    Pane* currentPane() const;
+    void buildMenus();
+};
