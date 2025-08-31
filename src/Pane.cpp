@@ -22,6 +22,7 @@
 #include <QFileInfo>
 #include <QImageReader>
 
+#include <KUrlNavigator>
 #include <KFileItem>
 #include <KDirModel>
 #include <KDirLister>
@@ -54,13 +55,16 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
 
     root->addWidget(tb);
 
-    // Splitter: top = stacked views, bottom = preview
-    vsplit = new QSplitter(Qt::Vertical, this);
-    vsplit->setChildrenCollapsible(false);
-    root->addWidget(vsplit);
+    nav = new KUrlNavigator(this);
+    root->addWidget(nav);
+
+    // Splitter: left = stacked views, right = preview
+    hsplit = new QSplitter(Qt::Horizontal, this);
+    hsplit->setChildrenCollapsible(false);
+    root->addWidget(hsplit);
 
     stack = new QStackedWidget(this);
-    vsplit->addWidget(stack);
+    hsplit->addWidget(stack);
 
     // Preview area
     preview = new QWidget(this);
@@ -78,7 +82,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
 
     pv->addWidget(previewImage, 1);
     pv->addWidget(previewText, 0);
-    vsplit->addWidget(preview);
+    hsplit->addWidget(preview);
     preview->setVisible(false); // hidden by default
 
     dirModel = new KDirModel(this);
@@ -120,20 +124,26 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     }
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
+    connect(miller, &MillerView::contextMenuRequested, this, [this](const QUrl &u, const QPoint &g){ showContextMenu(g, {u}); });
 
     ql = new QuickLookDialog(this);
     thumbs = new ThumbCache(this);
 
     connect(viewBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &Pane::onViewModeChanged);
     connect(zoom, &QSlider::valueChanged, this, &Pane::onZoomChanged);
+    connect(nav, &KUrlNavigator::urlChanged, this, &Pane::onNavigatorUrlChanged);
 
     // Selection -> preview (Icons/Details/Compact)
     auto hookSel = [this](QAbstractItemView *v){
         if (!v) return;
+        v->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(v, &QWidget::customContextMenuRequested, this, [this, v](const QPoint &pos){
+            showContextMenu(v->viewport()->mapToGlobal(pos));
+        });
         connect(v->selectionModel(), &QItemSelectionModel::currentChanged,
                 this, &Pane::onCurrentChanged);
-        connect(v, &QAbstractItemView::activated, this, &Pane::onActivated);
-        connect(v, &QAbstractItemView::clicked,   this, &Pane::onActivated); // open on click for list views if desired
+        connect(v, &QAbstractItemView::activated, this, &Pane::onActivated); // double-click opens
+        v->setEditTriggers(QAbstractItemView::NoEditTriggers);
     };
     hookSel(iconView);
     hookSel(detailsView);
@@ -141,7 +151,8 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
 
     applyIconSize(64);
     setRoot(startUrl);
-    setViewMode(3); // default to Miller; preview will light up in other views first
+    viewBox->setCurrentIndex(0); // sync UI to Icons
+    setViewMode(0); // default to Icons view
 }
 
 void Pane::setRoot(const QUrl &url) {
@@ -150,6 +161,7 @@ void Pane::setRoot(const QUrl &url) {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
     if (miller) miller->setRootUrl(url);
+    if (nav && nav->locationUrl() != url) nav->setLocationUrl(url);
 }
 
 void Pane::setUrl(const QUrl &url) { setRoot(url); }
@@ -193,6 +205,7 @@ void Pane::goHome() { setRoot(QUrl::fromLocalFile(QDir::homePath())); }
 
 void Pane::onViewModeChanged(int idx) { setViewMode(idx); }
 void Pane::onZoomChanged(int val) { applyIconSize(val); }
+void Pane::onNavigatorUrlChanged(const QUrl &url) { setRoot(url); }
 
 void Pane::applyIconSize(int px) { if (iconView) iconView->setIconSize(QSize(px,px)); }
 
@@ -309,7 +322,37 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
 // ---- clean stub (temporary, just to compile) ----
 void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 {
-    Q_UNUSED(globalPos);
-    Q_UNUSED(urls);
-    // no-op for now
+    QUrl u;
+    if (!urls.isEmpty()) {
+        u = urls.first();
+    }
+
+    // If no explicit URL, try the current standard view selection
+    if (!u.isValid()) {
+        QAbstractItemView *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+        if (v) {
+            QModelIndex idx = v->currentIndex();
+            if (idx.isValid()) {
+                u = urlForIndex(idx);
+            }
+        }
+    }
+    if (!u.isValid()) return;
+
+    QMenu menu;
+    QAction *actOpen = menu.addAction("Open");
+    QAction *actQL   = menu.addAction("Quick Look");
+    QAction *chosen  = menu.exec(globalPos);
+    if (!chosen) return;
+
+    if (chosen == actOpen) {
+        auto *job = new KIO::OpenUrlJob(u);
+        job->start();
+        return;
+    }
+    if (chosen == actQL) {
+        if (!ql) ql = new QuickLookDialog(this);
+        if (u.isLocalFile()) ql->showFile(u.toLocalFile());
+        return;
+    }
 }

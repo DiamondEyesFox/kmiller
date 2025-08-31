@@ -57,16 +57,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(placesView, &KFilePlacesView::urlChanged, this, &MainWindow::placeActivated);
 
     buildMenus();
-    // ---- View menu with Preview Pane ----
-    {
-        QMenu *viewMenu = menuBar()->addMenu("View");
-        actPreviewPane = viewMenu->addAction("Preview Pane");
-        actPreviewPane->setCheckable(true);
-        actPreviewPane->setChecked(false);
-        connect(actPreviewPane, &QAction::toggled, this, [this](bool on){
-            if (auto *p = currentPane()) p->setPreviewVisible(on);
-        });
-    }
     addInitialTab(QUrl::fromLocalFile(QDir::homePath()));
 }
 
@@ -100,6 +90,14 @@ void MainWindow::buildMenus() {
     actShowToolbar->setCheckable(true);
     actShowToolbar->setChecked(false);
     connect(actShowToolbar, &QAction::toggled, this, &MainWindow::toggleToolbar);
+
+    view->addSeparator();
+    actPreviewPane = view->addAction("Preview Pane");
+    actPreviewPane->setCheckable(true);
+    actPreviewPane->setChecked(false);
+    connect(actPreviewPane, &QAction::toggled, this, [this](bool on){
+        if (auto *p = currentPane()) p->setPreviewVisible(on);
+    });
 
     view->addSeparator();
     actQuickLook = view->addAction("Quick Look\tSpace", this, &MainWindow::quickLook);

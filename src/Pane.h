@@ -13,6 +13,7 @@ class QSplitter;
 class QLabel;
 class QTextEdit;
 
+class KUrlNavigator;
 class MillerView;
 class QuickLookDialog;
 class ThumbCache;
@@ -45,6 +46,7 @@ public:
 private slots:
     void onViewModeChanged(int idx);
     void onZoomChanged(int val);
+    void onNavigatorUrlChanged(const QUrl &url);
 
     void onActivated(const QModelIndex &idx);
     void onCurrentChanged(const QModelIndex &current, const QModelIndex &previous);
@@ -59,8 +61,9 @@ private:
     QToolBar *tb = nullptr;
     QComboBox *viewBox = nullptr;
     QSlider *zoom = nullptr;
+    KUrlNavigator *nav = nullptr;
 
-    QSplitter *vsplit = nullptr;        // vertical splitter: [stack] over [preview]
+    QSplitter *hsplit = nullptr;        // horizontal splitter: [stack] | [preview]
     QStackedWidget *stack = nullptr;
 
     QListView *iconView = nullptr;
