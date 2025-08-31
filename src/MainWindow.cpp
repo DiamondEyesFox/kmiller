@@ -14,6 +14,7 @@
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     resize(1500, 900);
+    setWindowTitle(QString("KMiller %1").arg(KMILLER_VERSION_STR));
     splitter = new QSplitter(this);
     setCentralWidget(splitter);
 

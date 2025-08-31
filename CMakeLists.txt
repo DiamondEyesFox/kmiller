@@ -17,7 +17,7 @@ else()
   if(_GITVER)
     set(_VER "${_GITVER}")
   else()
-    set(_VER "0.5.0")  # fallback default; change if you want
+    set(_VER "0.4.3")  # fallback default; change if you want
   endif()
 endif()
 project(KMiller VERSION ${_VER} LANGUAGES CXX)

@@ -27,12 +27,6 @@
 #include <KDirLister>
 #include <KDirSortFilterProxyModel>
 #include <KIO/OpenUrlJob>
-#include <KIO/CopyJob>
-#include <QClipboard>
-#include <QApplication>
-#include <QInputDialog>
-#include <QMessageBox>
-#include <QMimeData>
 
 #include <poppler-qt6.h>
 
@@ -126,7 +120,6 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     }
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
-    connect(miller, &MillerView::contextMenuRequested, this, [this](const QUrl &url, const QPoint &globalPos){ showContextMenu(globalPos, {url}); });
 
     ql = new QuickLookDialog(this);
     thumbs = new ThumbCache(this);
@@ -141,51 +134,6 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
                 this, &Pane::onCurrentChanged);
         connect(v, &QAbstractItemView::activated, this, &Pane::onActivated);
         connect(v, &QAbstractItemView::clicked,   this, &Pane::onActivated); // open on click for list views if desired
-        
-        // Context menu setup
-        v->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(v, &QAbstractItemView::customContextMenuRequested, this, [this, v](const QPoint &pos){
-            QModelIndex index = v->indexAt(pos);
-            QList<QUrl> urls;
-            if (index.isValid()) {
-                urls << urlForIndex(index);
-            }
-            showContextMenu(v->mapToGlobal(pos), urls);
-        });
-        
-        // Add Enter key handling for all views
-        auto *enterShortcut = new QShortcut(Qt::Key_Return, v);
-        connect(enterShortcut, &QShortcut::activated, this, [this, v](){
-            QModelIndex current = v->currentIndex();
-            if (current.isValid()) {
-                onActivated(current);
-            }
-        });
-        
-        auto *enterShortcut2 = new QShortcut(Qt::Key_Enter, v);
-        connect(enterShortcut2, &QShortcut::activated, this, [this, v](){
-            QModelIndex current = v->currentIndex();
-            if (current.isValid()) {
-                onActivated(current);
-            }
-        });
-        
-        // Add spacebar Quick Look for all views
-        auto *spaceShortcut = new QShortcut(Qt::Key_Space, v);
-        connect(spaceShortcut, &QShortcut::activated, this, [this, v](){
-            QModelIndex current = v->currentIndex();
-            if (current.isValid()) {
-                QUrl url = urlForIndex(current);
-                if (url.isValid()) {
-                    if (ql && ql->isVisible()) { 
-                        ql->close(); 
-                    } else { 
-                        if (!ql) ql = new QuickLookDialog(this); 
-                        ql->showFile(url.toLocalFile()); 
-                    }
-                }
-            }
-        });
     };
     hookSel(iconView);
     hookSel(detailsView);
@@ -193,9 +141,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
 
     applyIconSize(64);
     setRoot(startUrl);
-    // Sync UI and set default to Miller view
-    viewBox->setCurrentIndex(3);
-    setViewMode(3);
+    setViewMode(3); // default to Miller; preview will light up in other views first
 }
 
 void Pane::setRoot(const QUrl &url) {
@@ -277,36 +223,14 @@ void Pane::onCurrentChanged(const QModelIndex &current, const QModelIndex &) {
 }
 
 void Pane::quickLookSelected() {
+    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+    if (!v) return;
+    
+    QUrl url = urlForIndex(v->currentIndex());
+    if (!url.isValid() || !url.isLocalFile()) return;
+    
     if (!ql) ql = new QuickLookDialog(this);
-    
-    // Get currently selected item(s)
-    auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget());
-    if (!view) return;
-    
-    auto *selModel = view->selectionModel();
-    if (!selModel) return;
-    
-    auto indices = selModel->selectedIndexes();
-    if (indices.isEmpty()) {
-        // Try current index if nothing selected
-        QModelIndex current = view->currentIndex();
-        if (current.isValid()) {
-            QUrl url = urlForIndex(current);
-            if (url.isLocalFile()) {
-                ql->showFile(url.toLocalFile());
-            }
-        }
-        return;
-    }
-    
-    // Show first selected file
-    for (const auto &idx : indices) {
-        QUrl url = urlForIndex(idx);
-        if (url.isLocalFile()) {
-            ql->showFile(url.toLocalFile());
-            break; // Only show first one
-        }
-    }
+    ql->showFile(url.toLocalFile());
 }
 
 void Pane::setPreviewVisible(bool on) {
@@ -382,148 +306,10 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
 
 // --- temporary stub to compile; real menu can be filled later ---
 
+// ---- clean stub (temporary, just to compile) ----
 void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 {
-    QMenu menu(this);
-    
-    // If no URLs provided, show folder context menu
-    if (urls.isEmpty() || !urls.first().isValid()) {
-        menu.addAction(QIcon::fromTheme("folder-new"), "New Folder", this, [this]() {
-            bool ok;
-            QString name = QInputDialog::getText(this, "New Folder", "Folder name:", QLineEdit::Normal, "New Folder", &ok);
-            if (ok && !name.isEmpty()) {
-                QString newPath = currentRoot.toLocalFile() + "/" + name;
-                if (QDir().mkpath(newPath)) {
-                    // Refresh the view
-                    if (auto *l = dirModel->dirLister()) {
-                        l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
-                    }
-                } else {
-                    QMessageBox::warning(this, "Error", "Failed to create folder");
-                }
-            }
-        });
-        menu.addSeparator();
-        menu.addAction("Paste", this, &Pane::paste)->setEnabled(canPaste());
-    } else {
-        // File/folder context menu
-        QUrl url = urls.first();
-        QString filePath = url.toLocalFile();
-        QFileInfo fileInfo(filePath);
-        bool isDir = fileInfo.isDir();
-        
-        if (isDir) {
-            menu.addAction(QIcon::fromTheme("document-open-folder"), "Open", this, [this, url]() {
-                setRoot(url);  // Navigate internally instead of opening in Dolphin
-            });
-        } else {
-            menu.addAction(QIcon::fromTheme("document-open"), "Open", this, [url]() {
-                KIO::OpenUrlJob *job = new KIO::OpenUrlJob(url);
-                job->start();
-            });
-        }
-        
-        menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("edit-copy"), "Copy", this, [this, urls]() { copy(urls); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), "Cut", this, [this, urls]() { cut(urls); });
-        
-        if (canPaste()) {
-            menu.addAction(QIcon::fromTheme("edit-paste"), "Paste", this, &Pane::paste);
-        }
-        
-        menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("edit-rename"), "Rename", this, [this, url, fileInfo]() {
-            bool ok;
-            QString newName = QInputDialog::getText(this, "Rename", "New name:", QLineEdit::Normal, fileInfo.fileName(), &ok);
-            if (ok && !newName.isEmpty() && newName != fileInfo.fileName()) {
-                QString newPath = fileInfo.absolutePath() + "/" + newName;
-                if (QFile::rename(url.toLocalFile(), newPath)) {
-                    // Refresh the view
-                    if (auto *l = dirModel->dirLister()) {
-                        l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
-                    }
-                } else {
-                    QMessageBox::warning(this, "Error", "Failed to rename file");
-                }
-            }
-        });
-        
-        menu.addAction(QIcon::fromTheme("edit-delete"), "Delete", this, [this, url]() {
-            QMessageBox::StandardButton reply = QMessageBox::question(this, "Delete", 
-                QString("Are you sure you want to delete '%1'?").arg(QFileInfo(url.toLocalFile()).fileName()),
-                QMessageBox::Yes | QMessageBox::No);
-            if (reply == QMessageBox::Yes) {
-                if (QFile::remove(url.toLocalFile()) || QDir().rmdir(url.toLocalFile())) {
-                    // Refresh the view
-                    if (auto *l = dirModel->dirLister()) {
-                        l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
-                    }
-                } else {
-                    QMessageBox::warning(this, "Error", "Failed to delete file");
-                }
-            }
-        });
-        
-        menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("document-preview"), "Quick Look", this, [this, filePath]() {
-            if (!ql) ql = new QuickLookDialog(this);
-            ql->showFile(filePath);
-        });
-    }
-    
-    menu.exec(globalPos);
-}
-
-// Clipboard operations implementation
-void Pane::copy(const QList<QUrl> &urls)
-{
-    if (urls.isEmpty()) return;
-    
-    QMimeData *mimeData = new QMimeData();
-    mimeData->setUrls(urls);
-    mimeData->setData("application/x-kde-cutselection", "0"); // 0 = copy, 1 = cut
-    QApplication::clipboard()->setMimeData(mimeData);
-}
-
-void Pane::cut(const QList<QUrl> &urls)
-{
-    if (urls.isEmpty()) return;
-    
-    QMimeData *mimeData = new QMimeData();
-    mimeData->setUrls(urls);
-    mimeData->setData("application/x-kde-cutselection", "1"); // 0 = copy, 1 = cut
-    QApplication::clipboard()->setMimeData(mimeData);
-}
-
-void Pane::paste()
-{
-    const QMimeData *mimeData = QApplication::clipboard()->mimeData();
-    if (!mimeData || !mimeData->hasUrls()) return;
-    
-    QList<QUrl> sourceUrls = mimeData->urls();
-    if (sourceUrls.isEmpty()) return;
-    
-    // Check if this is a cut operation
-    bool isCut = mimeData->data("application/x-kde-cutselection") == "1";
-    
-    // Use KIO to perform the copy/move operation
-    KIO::CopyJob *job;
-    if (isCut) {
-        job = KIO::move(sourceUrls, currentRoot, KIO::DefaultFlags);
-    } else {
-        job = KIO::copy(sourceUrls, currentRoot, KIO::DefaultFlags);
-    }
-    
-    // Refresh view when operation completes
-    connect(job, &KIO::CopyJob::finished, this, [this]() {
-        if (auto *l = dirModel->dirLister()) {
-            l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
-        }
-    });
-}
-
-bool Pane::canPaste()
-{
-    const QMimeData *mimeData = QApplication::clipboard()->mimeData();
-    return mimeData && mimeData->hasUrls();
+    Q_UNUSED(globalPos);
+    Q_UNUSED(urls);
+    // no-op for now
 }

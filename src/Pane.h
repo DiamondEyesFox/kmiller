@@ -55,12 +55,6 @@ private:
 
     void updatePreviewForUrl(const QUrl &u);
     void clearPreview();
-    
-    // Clipboard operations
-    void copy(const QList<QUrl> &urls);
-    void cut(const QList<QUrl> &urls);
-    void paste();
-    bool canPaste();
 
     QToolBar *tb = nullptr;
     QComboBox *viewBox = nullptr;
