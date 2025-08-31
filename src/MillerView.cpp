@@ -80,6 +80,15 @@ void MillerView::addColumn(const QUrl &url) {
         }
     };
 
+    // Selection changes for preview pane
+    connect(view->selectionModel(), &QItemSelectionModel::currentChanged, this, 
+            [this, model](const QModelIndex &current, const QModelIndex &) {
+        if (current.isValid()) {
+            QUrl url = QUrl::fromLocalFile(model->filePath(current));
+            emit selectionChanged(url);
+        }
+    });
+
     // Single-click: select only (Finder column behavior)
     // Double-click: open
     connect(view, &QListView::doubleClicked, this, openIndex);

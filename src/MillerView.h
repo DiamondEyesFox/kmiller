@@ -15,6 +15,7 @@ public:
 signals:
     void quickLookRequested(const QString &path);
     void contextMenuRequested(const QUrl &url, const QPoint &globalPos);
+    void selectionChanged(const QUrl &url);
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;

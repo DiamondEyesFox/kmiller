@@ -61,6 +61,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Splitter: left = stacked views, right = preview
     hsplit = new QSplitter(Qt::Horizontal, this);
     hsplit->setChildrenCollapsible(false);
+    hsplit->setHandleWidth(3); // thinner handle
     root->addWidget(hsplit);
 
     stack = new QStackedWidget(this);
@@ -84,6 +85,11 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     pv->addWidget(previewText, 0);
     hsplit->addWidget(preview);
     preview->setVisible(false); // hidden by default
+    preview->setMinimumWidth(200); // minimum preview width
+    preview->setMaximumWidth(400); // reasonable max width
+    
+    // Set initial sizes: 70% main view, 30% preview
+    hsplit->setSizes({700, 300});
 
     dirModel = new KDirModel(this);
     proxy = new KDirSortFilterProxyModel(this);
@@ -125,6 +131,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
     connect(miller, &MillerView::contextMenuRequested, this, [this](const QUrl &u, const QPoint &g){ showContextMenu(g, {u}); });
+    connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ if (m_previewVisible) updatePreviewForUrl(url); });
 
     ql = new QuickLookDialog(this);
     thumbs = new ThumbCache(this);
