@@ -11,6 +11,8 @@
 #include <QUrl>
 #include <QMenuBar>
 #include <QIcon>
+#include <QLabel>
+#include <QStatusBar>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     resize(1500, 900);
@@ -37,6 +39,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         delete w;
         if (tabs->count()==0) newTab();
     });
+    
+    // Update status bar when switching tabs
+    connect(tabs, &QTabWidget::currentChanged, this, [this]{
+        if (auto *p = currentPane()) {
+            p->updateStatus(); // Trigger status update for current pane
+        }
+    });
 
     splitter->addWidget(placesView);
     splitter->addWidget(rightContainer);
@@ -45,6 +54,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     tb = addToolBar("Main");
     tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
     tb->setIconSize(QSize(18,18));
+
+    // Navigation buttons
+    auto *actBack = tb->addAction(QIcon::fromTheme("go-previous"), "Back");
+    connect(actBack, &QAction::triggered, this, [this]{ if (auto p=currentPane()) p->goBack(); });
+    
+    auto *actForward = tb->addAction(QIcon::fromTheme("go-next"), "Forward");
+    connect(actForward, &QAction::triggered, this, [this]{ if (auto p=currentPane()) p->goForward(); });
+    
+    tb->addSeparator();
 
     actNewTab = tb->addAction(QIcon::fromTheme("tab-new"), "New Tab");
     connect(actNewTab, &QAction::triggered, this, &MainWindow::newTab);
@@ -57,6 +75,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(placesView, &KFilePlacesView::urlChanged, this, &MainWindow::placeActivated);
 
     buildMenus();
+    
+    // Setup status bar
+    statusLabel = new QLabel("Ready");
+    statusBar()->addWidget(statusLabel);
+    
     addInitialTab(QUrl::fromLocalFile(QDir::homePath()));
 }
 
@@ -75,9 +98,14 @@ void MainWindow::buildMenus() {
     connect(actPrefs, &QAction::triggered, this, &MainWindow::openPreferences);
 
     auto edit = menuBar()->addMenu("&Edit");
-    edit->addAction("Cut");
-    edit->addAction("Copy");
-    edit->addAction("Paste");
+    edit->addAction("Cut", [this]{ if (auto p=currentPane()) p->cutSelected(); }, QKeySequence::Cut);
+    edit->addAction("Copy", [this]{ if (auto p=currentPane()) p->copySelected(); }, QKeySequence::Copy);
+    edit->addAction("Paste", [this]{ if (auto p=currentPane()) p->pasteFiles(); }, QKeySequence::Paste);
+    edit->addSeparator();
+    edit->addAction("Delete", [this]{ if (auto p=currentPane()) p->deleteSelected(); }, QKeySequence::Delete);
+    edit->addAction("Rename", [this]{ if (auto p=currentPane()) p->renameSelected(); }, QKeySequence("F2"));
+    edit->addSeparator();
+    edit->addAction("New Folder", [this]{ if (auto p=currentPane()) p->createNewFolder(); }, QKeySequence("Ctrl+Shift+N"));
 
     auto view = menuBar()->addMenu("&View");
     view->addAction("Icons", this, &MainWindow::setViewIcons);
@@ -103,6 +131,9 @@ void MainWindow::buildMenus() {
     actQuickLook = view->addAction("Quick Look\tSpace", this, &MainWindow::quickLook);
 
     auto go = menuBar()->addMenu("&Go");
+    go->addAction("Back", [this]{ if (auto p=currentPane()) p->goBack(); })->setShortcut(QKeySequence("Alt+Left"));
+    go->addAction("Forward", [this]{ if (auto p=currentPane()) p->goForward(); })->setShortcut(QKeySequence("Alt+Right"));
+    go->addSeparator();
     go->addAction("Up", [this]{ if (auto p=currentPane()) p->goUp(); });
     go->addAction("Home", [this]{ if (auto p=currentPane()) p->goHome(); });
 
@@ -116,6 +147,9 @@ void MainWindow::addInitialTab(const QUrl &url) {
     Pane *p = new Pane(url, this);
     int idx = tabs->addTab(p, url.isLocalFile() ? QFileInfo(url.toLocalFile()).fileName() : url.toString());
     tabs->setCurrentIndex(idx);
+    
+    // Connect status updates
+    connect(p, &Pane::statusChanged, this, &MainWindow::updateStatusBar);
 }
 
 void MainWindow::newTab() { addInitialTab(QUrl::fromLocalFile(QDir::homePath())); }
@@ -142,4 +176,14 @@ void MainWindow::quickLook(){ if (auto p=currentPane()) p->quickLookSelected();
 
 Pane* MainWindow::currentPane() const {
     return qobject_cast<Pane*>(tabs->currentWidget());
+}
+
+void MainWindow::updateStatusBar(int totalFiles, int selectedFiles) {
+    if (selectedFiles == 0) {
+        statusLabel->setText(QString("%1 items").arg(totalFiles));
+    } else if (selectedFiles == 1) {
+        statusLabel->setText(QString("%1 of %2 items selected").arg(selectedFiles).arg(totalFiles));
+    } else {
+        statusLabel->setText(QString("%1 of %2 items selected").arg(selectedFiles).arg(totalFiles));
+    }
 }

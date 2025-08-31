@@ -2,6 +2,8 @@
 #include <QMainWindow>
 class QAction;
 class QMenu;
+class QStatusBar;
+class QLabel;
 #include <QSplitter>
 #include <QTabWidget>
 #include <QToolBar>
@@ -16,6 +18,9 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     MainWindow(QWidget *parent=nullptr);
+public slots:
+    void updateStatusBar(int totalFiles, int selectedFiles);
+
 private slots:
     void newTab();
     void closeCurrentTab();
@@ -41,6 +46,9 @@ private:
     QAction *actShowToolbar;
     QAction *actPrefs;
     QAction *actQuickLook;
+    
+    // Status bar
+    QLabel *statusLabel;
 
     void addInitialTab(const QUrl &url);
     Pane* currentPane() const;
