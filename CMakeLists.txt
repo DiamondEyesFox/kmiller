@@ -101,6 +101,11 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/src
 install(FILES ${CMAKE_SOURCE_DIR}/CMakeLists.txt
         DESTINATION ${KMILLER_VERSIONS_DIR})
 
+# Install patch notes
+install(FILES ${CMAKE_SOURCE_DIR}/PATCHNOTES.md
+        DESTINATION /opt/kmiller
+        RENAME PATCHNOTES-latest.md)
+
 # Provide version string to the code as KMILLER_VERSION_STR
 if(NOT DEFINED PROJECT_VERSION)
   set(PROJECT_VERSION "${KMILLER_VERSION}")

@@ -44,6 +44,7 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QProcess>
+#include <QFileDialog>
 
 #include <poppler-qt6.h>
 #include <QKeyEvent>
@@ -55,6 +56,14 @@
 static bool isImageFile(const QString &path) {
     const QByteArray fmt = QImageReader::imageFormat(path);
     return !fmt.isEmpty();
+}
+
+static bool isArchiveFile(const QString &path) {
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    return suffix == "zip" || suffix == "tar" || suffix == "gz" || 
+           suffix == "bz2" || suffix == "xz" || suffix == "7z" ||
+           suffix == "rar" || suffix == "tgz" || suffix == "tbz2" ||
+           suffix == "txz" || suffix == "lzma";
 }
 
 static QPixmap getFileTypeIcon(const QFileInfo &fi, int size = 128) {
@@ -533,9 +542,24 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     QAction *actCopy = menu.addAction("Copy");
     QAction *actPaste = menu.addAction("Paste");
     menu.addSeparator();
+    QAction *actDuplicate = menu.addAction("Duplicate");
+    menu.addSeparator();
     QAction *actRename = menu.addAction("Rename");
     QAction *actDelete = menu.addAction("Delete");
     menu.addSeparator();
+    
+    // Compress/Extract based on file type
+    QAction *actCompress = nullptr;
+    QAction *actExtract = nullptr;
+    
+    QFileInfo fi(u.toLocalFile());
+    if (isArchiveFile(u.toLocalFile())) {
+        actExtract = menu.addAction("Extract Here");
+    } else {
+        actCompress = menu.addAction("Compress");
+    }
+    menu.addSeparator();
+    
     QAction *actNewFolder = menu.addAction("New Folder");
     menu.addSeparator();
     QAction *actProperties = menu.addAction("Properties");
@@ -568,12 +592,24 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         pasteFiles();
         return;
     }
+    if (chosen == actDuplicate) {
+        duplicateSelected();
+        return;
+    }
     if (chosen == actRename) {
         renameSelected();
         return;
     }
     if (chosen == actDelete) {
         deleteSelected();
+        return;
+    }
+    if (chosen == actCompress) {
+        compressSelected();
+        return;
+    }
+    if (chosen == actExtract) {
+        extractArchive(u);
         return;
     }
     if (chosen == actNewFolder) {
@@ -935,5 +971,245 @@ void Pane::showOpenWithDialog(const QUrl &url) {
             }
         }
     }
+}
+
+void Pane::compressSelected() {
+    QList<QUrl> urls = getSelectedUrls();
+    if (urls.isEmpty()) return;
+    
+    // Get the directory for output
+    QString outputDir = currentRoot.toLocalFile();
+    
+    // If single file/folder selected, suggest name based on it
+    QString suggestedName;
+    if (urls.size() == 1) {
+        QFileInfo fi(urls.first().toLocalFile());
+        suggestedName = fi.baseName() + ".zip";
+    } else {
+        suggestedName = QString("%1_files.zip").arg(urls.size());
+    }
+    
+    bool ok;
+    QString archiveName = QInputDialog::getText(this, "Compress Files",
+                                               QString("Archive name (in %1):").arg(QFileInfo(outputDir).fileName()),
+                                               QLineEdit::Normal, suggestedName, &ok);
+    
+    if (!ok || archiveName.isEmpty()) return;
+    
+    // Ensure .zip extension
+    if (!archiveName.toLower().endsWith(".zip")) {
+        archiveName += ".zip";
+    }
+    
+    QString archivePath = outputDir + "/" + archiveName;
+    
+    // Check if file exists
+    if (QFile::exists(archivePath)) {
+        int ret = QMessageBox::question(this, "File Exists",
+                                      QString("Archive '%1' already exists. Overwrite?").arg(archiveName),
+                                      QMessageBox::Yes | QMessageBox::No);
+        if (ret != QMessageBox::Yes) return;
+    }
+    
+    // Build command to create zip archive
+    QStringList arguments;
+    arguments << "-r" << archivePath;
+    
+    for (const QUrl &url : urls) {
+        if (url.isLocalFile()) {
+            QString path = url.toLocalFile();
+            arguments << QFileInfo(path).fileName();
+        }
+    }
+    
+    // Change to the directory containing the files
+    QProcess *process = new QProcess(this);
+    process->setWorkingDirectory(outputDir);
+    
+    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            [this, archiveName, process](int exitCode) {
+                if (exitCode == 0) {
+                    QMessageBox::information(this, "Compression Complete",
+                                           QString("Archive '%1' created successfully.").arg(archiveName));
+                    // Refresh the directory listing
+                    if (auto *l = dirModel->dirLister()) {
+                        l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
+                    }
+                } else {
+                    QMessageBox::warning(this, "Compression Failed",
+                                       QString("Failed to create archive '%1'.").arg(archiveName));
+                }
+                process->deleteLater();
+            });
+    
+    process->start("zip", arguments);
+    
+    if (!process->waitForStarted()) {
+        QMessageBox::warning(this, "Error", "Failed to start compression. Is 'zip' installed?");
+        process->deleteLater();
+    }
+}
+
+void Pane::extractArchive(const QUrl &archiveUrl) {
+    if (!archiveUrl.isValid() || !archiveUrl.isLocalFile()) return;
+    
+    QString archivePath = archiveUrl.toLocalFile();
+    QFileInfo fi(archivePath);
+    QString outputDir = fi.absolutePath();
+    
+    // Ask user for extraction location
+    QString extractDir = QFileDialog::getExistingDirectory(this, "Extract to Directory",
+                                                          outputDir,
+                                                          QFileDialog::ShowDirsOnly);
+    if (extractDir.isEmpty()) return;
+    
+    QString suffix = fi.suffix().toLower();
+    QStringList arguments;
+    QString command;
+    
+    // Choose appropriate extraction command based on file type
+    if (suffix == "zip") {
+        command = "unzip";
+        arguments << "-o" << archivePath << "-d" << extractDir;
+    } else if (suffix == "tar") {
+        command = "tar";
+        arguments << "-xf" << archivePath << "-C" << extractDir;
+    } else if (suffix == "gz" || suffix == "tgz") {
+        command = "tar";
+        arguments << "-xzf" << archivePath << "-C" << extractDir;
+    } else if (suffix == "bz2" || suffix == "tbz2") {
+        command = "tar";
+        arguments << "-xjf" << archivePath << "-C" << extractDir;
+    } else if (suffix == "xz" || suffix == "txz") {
+        command = "tar";
+        arguments << "-xJf" << archivePath << "-C" << extractDir;
+    } else if (suffix == "7z") {
+        command = "7z";
+        arguments << "x" << archivePath << "-o" + extractDir;
+    } else if (suffix == "rar") {
+        command = "unrar";
+        arguments << "x" << archivePath << extractDir;
+    } else {
+        QMessageBox::warning(this, "Unsupported Format",
+                           QString("Extraction of '%1' files is not supported.").arg(suffix.toUpper()));
+        return;
+    }
+    
+    QProcess *process = new QProcess(this);
+    
+    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            [this, fi, extractDir, process](int exitCode) {
+                if (exitCode == 0) {
+                    QMessageBox::information(this, "Extraction Complete",
+                                           QString("Archive '%1' extracted successfully to '%2'.")
+                                           .arg(fi.fileName()).arg(extractDir));
+                } else {
+                    QMessageBox::warning(this, "Extraction Failed",
+                                       QString("Failed to extract archive '%1'.").arg(fi.fileName()));
+                }
+                process->deleteLater();
+            });
+    
+    process->start(command, arguments);
+    
+    if (!process->waitForStarted()) {
+        QMessageBox::warning(this, "Error", 
+                           QString("Failed to start extraction. Is '%1' installed?").arg(command));
+        process->deleteLater();
+    }
+}
+
+void Pane::duplicateSelected() {
+    QList<QUrl> urls = getSelectedUrls();
+    if (urls.isEmpty()) return;
+    
+    QString currentDir = currentRoot.toLocalFile();
+    
+    for (const QUrl &url : urls) {
+        if (!url.isLocalFile()) continue;
+        
+        QString sourcePath = url.toLocalFile();
+        QFileInfo fi(sourcePath);
+        
+        // Generate unique name for duplicate
+        QString baseName = fi.completeBaseName();
+        QString extension = fi.suffix();
+        QString duplicateName;
+        
+        if (extension.isEmpty()) {
+            duplicateName = QString("%1 copy").arg(baseName);
+        } else {
+            duplicateName = QString("%1 copy.%2").arg(baseName).arg(extension);
+        }
+        
+        QString duplicatePath = fi.absolutePath() + "/" + duplicateName;
+        
+        // If "copy" version exists, add numbers
+        int counter = 1;
+        while (QFile::exists(duplicatePath)) {
+            counter++;
+            if (extension.isEmpty()) {
+                duplicateName = QString("%1 copy %2").arg(baseName).arg(counter);
+            } else {
+                duplicateName = QString("%1 copy %2.%3").arg(baseName).arg(counter).arg(extension);
+            }
+            duplicatePath = fi.absolutePath() + "/" + duplicateName;
+        }
+        
+        // Perform the duplication
+        bool success = false;
+        if (fi.isDir()) {
+            // For directories, use cp -r command
+            QProcess *process = new QProcess(this);
+            QStringList arguments;
+            arguments << "-r" << sourcePath << duplicatePath;
+            
+            process->start("cp", arguments);
+            success = process->waitForFinished(10000) && process->exitCode() == 0;
+            process->deleteLater();
+        } else {
+            // For files, use QFile::copy
+            success = QFile::copy(sourcePath, duplicatePath);
+        }
+        
+        if (!success) {
+            QMessageBox::warning(this, "Duplicate Failed",
+                                QString("Failed to duplicate '%1'.").arg(fi.fileName()));
+            return;
+        }
+    }
+    
+    // Refresh the directory listing to show new duplicates
+    if (auto *l = dirModel->dirLister()) {
+        l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
+    }
+    
+    QMessageBox::information(this, "Duplicate Complete",
+                           QString("Successfully duplicated %1 item(s).").arg(urls.size()));
+}
+
+void Pane::setSortCriteria(int criteria) {
+    if (!proxy) return;
+    
+    int column = 0;
+    switch (criteria) {
+        case 0: column = 0; break; // Name
+        case 1: column = 1; break; // Size  
+        case 2: column = 2; break; // Type
+        case 3: column = 3; break; // Date Modified
+        default: column = 0; break;
+    }
+    
+    proxy->setSortRole(Qt::DisplayRole);
+    proxy->sort(column, proxy->sortOrder());
+}
+
+void Pane::setSortOrder(Qt::SortOrder order) {
+    if (!proxy) return;
+    
+    int currentColumn = proxy->sortColumn();
+    if (currentColumn < 0) currentColumn = 0; // Default to name
+    
+    proxy->sort(currentColumn, order);
 }
 

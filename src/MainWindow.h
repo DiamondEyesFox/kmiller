@@ -32,6 +32,7 @@ private slots:
     void setViewCompact();
     void setViewMiller();
     void quickLook();
+    void showAbout();
 private:
     QAction *actPreviewPane = nullptr;
 

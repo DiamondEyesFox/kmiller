@@ -42,6 +42,10 @@ public:
     void goForward();
     bool canGoBack() const;
     bool canGoForward() const;
+    
+    // Sorting
+    void setSortCriteria(int criteria);  // 0 Name, 1 Size, 2 Type, 3 Date
+    void setSortOrder(Qt::SortOrder order);
 
     // Context menu usable by both Miller and the other views
 
@@ -54,6 +58,7 @@ public:
     void pasteFiles();
     void deleteSelected();
     void renameSelected();
+    void duplicateSelected();
     void createNewFolder();
 
     // Preview pane
@@ -90,6 +95,8 @@ private:
     void clearPreview();
     
     void showOpenWithDialog(const QUrl &url);
+    void compressSelected();
+    void extractArchive(const QUrl &archiveUrl);
 
     QToolBar *tb = nullptr;
     QComboBox *viewBox = nullptr;
