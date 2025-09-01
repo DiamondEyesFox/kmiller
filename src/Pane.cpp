@@ -36,6 +36,14 @@
 #include <KIO/OpenUrlJob>
 #include <KIO/CopyJob>
 #include <KIO/DeleteJob>
+#include <QMimeDatabase>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QListWidget>
+#include <QDialogButtonBox>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QProcess>
 
 #include <poppler-qt6.h>
 #include <QKeyEvent>
@@ -47,6 +55,70 @@
 static bool isImageFile(const QString &path) {
     const QByteArray fmt = QImageReader::imageFormat(path);
     return !fmt.isEmpty();
+}
+
+static QPixmap getFileTypeIcon(const QFileInfo &fi, int size = 128) {
+    QMimeDatabase db;
+    QString mimeType;
+    
+    if (fi.isDir()) {
+        // Special folder types
+        QString name = fi.fileName().toLower();
+        if (name == "documents" || name == "doc") {
+            return QIcon::fromTheme("folder-documents").pixmap(size, size);
+        } else if (name == "downloads" || name == "download") {
+            return QIcon::fromTheme("folder-download").pixmap(size, size);
+        } else if (name == "pictures" || name == "images") {
+            return QIcon::fromTheme("folder-pictures").pixmap(size, size);
+        } else if (name == "music" || name == "audio") {
+            return QIcon::fromTheme("folder-music").pixmap(size, size);
+        } else if (name == "videos" || name == "movies") {
+            return QIcon::fromTheme("folder-videos").pixmap(size, size);
+        } else if (name == "desktop") {
+            return QIcon::fromTheme("folder-desktop").pixmap(size, size);
+        } else if (name == "home") {
+            return QIcon::fromTheme("folder-home").pixmap(size, size);
+        } else {
+            return QIcon::fromTheme("folder").pixmap(size, size);
+        }
+    }
+    
+    // Get MIME type for files
+    auto mt = db.mimeTypeForFile(fi.filePath(), QMimeDatabase::MatchContent);
+    mimeType = mt.name();
+    
+    // Try to get icon from MIME type
+    QIcon icon = QIcon::fromTheme(mt.iconName());
+    if (!icon.isNull()) {
+        return icon.pixmap(size, size);
+    }
+    
+    // Fallback icons based on file extensions and MIME types
+    QString suffix = fi.suffix().toLower();
+    
+    if (mimeType.startsWith("image/")) {
+        return QIcon::fromTheme("image-x-generic").pixmap(size, size);
+    } else if (mimeType.startsWith("video/")) {
+        return QIcon::fromTheme("video-x-generic").pixmap(size, size);
+    } else if (mimeType.startsWith("audio/")) {
+        return QIcon::fromTheme("audio-x-generic").pixmap(size, size);
+    } else if (mimeType == "application/pdf") {
+        return QIcon::fromTheme("application-pdf").pixmap(size, size);
+    } else if (mimeType.startsWith("text/") || mimeType.contains("json") || mimeType.contains("xml")) {
+        return QIcon::fromTheme("text-x-generic").pixmap(size, size);
+    } else if (suffix == "zip" || suffix == "rar" || suffix == "tar" || suffix == "gz" || 
+               suffix == "7z" || suffix == "bz2" || suffix == "xz") {
+        return QIcon::fromTheme("package-x-generic").pixmap(size, size);
+    } else if (suffix == "deb" || suffix == "rpm" || suffix == "pkg" || suffix == "dmg") {
+        return QIcon::fromTheme("package-x-generic").pixmap(size, size);
+    } else if (suffix == "exe" || suffix == "msi") {
+        return QIcon::fromTheme("application-x-ms-dos-executable").pixmap(size, size);
+    } else if (suffix == "appimage" || fi.isExecutable()) {
+        return QIcon::fromTheme("application-x-executable").pixmap(size, size);
+    }
+    
+    // Final fallback
+    return QIcon::fromTheme("text-x-generic").pixmap(size, size);
 }
 
 static QString getThumbnailPath(const QUrl &url) {
@@ -376,6 +448,12 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
     QFileInfo fi(path);
 
     if (fi.isDir()) {
+        // Show folder icon
+        QPixmap folderIcon = getFileTypeIcon(fi, 128);
+        if (!folderIcon.isNull()) {
+            previewImage->setPixmap(folderIcon);
+        }
+        
         previewText->setPlainText(QString("%1\n%2 items")
                                   .arg(fi.fileName().isEmpty() ? path : fi.fileName())
                                   .arg(QDir(path).entryList(QDir::NoDotAndDotDot|QDir::AllEntries).size()));
@@ -413,7 +491,12 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
         }
     }
 
-    // Fallback
+    // Fallback - show file type icon
+    QPixmap fileIcon = getFileTypeIcon(fi, 128);
+    if (!fileIcon.isNull()) {
+        previewImage->setPixmap(fileIcon);
+    }
+    
     previewText->setPlainText(QString("%1 — %2 KB")
                               .arg(fi.fileName())
                               .arg((fi.size()+1023)/1024));
@@ -443,6 +526,7 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 
     QMenu menu;
     QAction *actOpen = menu.addAction("Open");
+    QAction *actOpenWith = menu.addAction("Open With...");
     QAction *actQL   = menu.addAction("Quick Look");
     menu.addSeparator();
     QAction *actCut = menu.addAction("Cut");
@@ -462,6 +546,10 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     if (chosen == actOpen) {
         auto *job = new KIO::OpenUrlJob(u);
         job->start();
+        return;
+    }
+    if (chosen == actOpenWith) {
+        showOpenWithDialog(u);
         return;
     }
     if (chosen == actQL) {
@@ -754,5 +842,98 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
         }
     }
     return QWidget::eventFilter(obj, event);
+}
+
+void Pane::showOpenWithDialog(const QUrl &url) {
+    if (!url.isValid() || !url.isLocalFile()) return;
+    
+    QString filePath = url.toLocalFile();
+    QFileInfo fi(filePath);
+    
+    // Get MIME type
+    QMimeDatabase db;
+    QMimeType mimeType = db.mimeTypeForFile(filePath);
+    
+    // Create simple dialog with common applications
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString("Open %1 with...").arg(fi.fileName()));
+    dialog.setModal(true);
+    dialog.resize(400, 300);
+    
+    auto *layout = new QVBoxLayout(&dialog);
+    
+    auto *label = new QLabel(QString("Choose an application to open %1:").arg(fi.fileName()));
+    layout->addWidget(label);
+    
+    auto *listWidget = new QListWidget();
+    layout->addWidget(listWidget);
+    
+    // Add some common applications based on file type
+    QStringList applications;
+    QString mimeTypeName = mimeType.name();
+    
+    if (mimeTypeName.startsWith("text/") || mimeTypeName.contains("json") || mimeTypeName.contains("xml")) {
+        applications << "gedit" << "kate" << "nano" << "vim" << "code" << "atom";
+    } else if (mimeTypeName.startsWith("image/")) {
+        applications << "gwenview" << "gimp" << "kolourpaint" << "feh" << "eog";
+    } else if (mimeTypeName.startsWith("video/")) {
+        applications << "vlc" << "mpv" << "dragon" << "totem";
+    } else if (mimeTypeName.startsWith("audio/")) {
+        applications << "vlc" << "audacity" << "amarok" << "clementine";
+    } else if (mimeTypeName == "application/pdf") {
+        applications << "okular" << "evince" << "firefox" << "chrome";
+    } else {
+        applications << "gedit" << "kate" << "firefox" << "vlc";
+    }
+    
+    // Add generic applications
+    applications << "konsole" << "xdg-open";
+    
+    for (const QString &app : applications) {
+        auto *item = new QListWidgetItem(app);
+        item->setData(Qt::UserRole, app);
+        listWidget->addItem(item);
+    }
+    
+    // Add custom command option
+    auto *customItem = new QListWidgetItem("Custom command...");
+    customItem->setData(Qt::UserRole, "custom");
+    listWidget->addItem(customItem);
+    
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+    
+    connect(listWidget, &QListWidget::itemDoubleClicked, &dialog, &QDialog::accept);
+    
+    if (dialog.exec() == QDialog::Accepted) {
+        auto *selectedItem = listWidget->currentItem();
+        if (selectedItem) {
+            QString command = selectedItem->data(Qt::UserRole).toString();
+            
+            if (command == "custom") {
+                // Show input dialog for custom command
+                bool ok;
+                QString customCommand = QInputDialog::getText(&dialog, "Custom Command",
+                                                            "Enter command to open file with:",
+                                                            QLineEdit::Normal, "", &ok);
+                if (ok && !customCommand.isEmpty()) {
+                    command = customCommand;
+                } else {
+                    return;
+                }
+            }
+            
+            // Execute the command
+            QStringList arguments;
+            arguments << filePath;
+            
+            if (!QProcess::startDetached(command, arguments)) {
+                QMessageBox::warning(this, "Error", 
+                                    QString("Failed to open file with %1").arg(command));
+            }
+        }
+    }
 }
 

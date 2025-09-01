@@ -88,6 +88,8 @@ private:
 
     void updatePreviewForUrl(const QUrl &u);
     void clearPreview();
+    
+    void showOpenWithDialog(const QUrl &url);
 
     QToolBar *tb = nullptr;
     QComboBox *viewBox = nullptr;

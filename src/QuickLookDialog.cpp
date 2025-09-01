@@ -1,4 +1,5 @@
 #include "QuickLookDialog.h"
+#include "Pane.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
@@ -12,6 +13,7 @@
 #include <QMimeDatabase>
 #include <QShortcut>
 #include <QFile>
+#include <QDir>
 #include <poppler-qt6.h>
 
 static QWidget* makeScroll(QWidget *child) {
@@ -22,7 +24,7 @@ static QWidget* makeScroll(QWidget *child) {
     return sa;
 }
 
-QuickLookDialog::QuickLookDialog(QWidget *parent) : QDialog(parent) {
+QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(parentPane) {
     setWindowTitle(QStringLiteral("Quick Look"));
     setModal(false); // modeless
     setWindowFlag(Qt::WindowCloseButtonHint, true);
@@ -34,10 +36,17 @@ QuickLookDialog::QuickLookDialog(QWidget *parent) : QDialog(parent) {
     info = new QLabel(this);
     info->setMinimumHeight(24);
 
+    prevBtn = new QPushButton(QStringLiteral("◀ Previous"), this);
+    nextBtn = new QPushButton(QStringLiteral("Next ▶"), this);
     closeBtn = new QPushButton(QStringLiteral("Close"), this);
+    
+    connect(prevBtn, &QPushButton::clicked, this, &QuickLookDialog::navigatePrevious);
+    connect(nextBtn, &QPushButton::clicked, this, &QuickLookDialog::navigateNext);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::close);
 
     top->addWidget(info, 1);
+    top->addWidget(prevBtn, 0);
+    top->addWidget(nextBtn, 0);
     top->addWidget(closeBtn, 0);
     v->addLayout(top);
 
@@ -55,11 +64,15 @@ QuickLookDialog::QuickLookDialog(QWidget *parent) : QDialog(parent) {
     stack->addWidget(textEdit);               // 2
     stack->addWidget(emptyInfo);              // 3
 
-    // Close with Esc or Space (matches Finder-ish toggle)
+    // Keyboard shortcuts
     escShortcut = new QShortcut(QKeySequence::Cancel, this);
     connect(escShortcut, &QShortcut::activated, this, &QDialog::close);
     spaceShortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
     connect(spaceShortcut, &QShortcut::activated, this, &QDialog::close);
+    leftShortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
+    connect(leftShortcut, &QShortcut::activated, this, &QuickLookDialog::navigatePrevious);
+    rightShortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
+    connect(rightShortcut, &QShortcut::activated, this, &QuickLookDialog::navigateNext);
 }
 
 void QuickLookDialog::clearView() {
@@ -113,9 +126,23 @@ void QuickLookDialog::showText(const QString &path) {
 }
 
 void QuickLookDialog::showFile(const QString &path) {
+    currentFilePath = path;
     QFileInfo fi(path);
     info->setText(fi.fileName());
     clearView();
+
+    // Enable/disable navigation buttons based on file availability
+    if (pane) {
+        QDir dir(fi.absolutePath());
+        QStringList files = dir.entryList(QDir::Files, QDir::Name);
+        int currentIndex = files.indexOf(fi.fileName());
+        
+        prevBtn->setEnabled(currentIndex > 0);
+        nextBtn->setEnabled(currentIndex >= 0 && currentIndex < files.count() - 1);
+    } else {
+        prevBtn->setEnabled(false);
+        nextBtn->setEnabled(false);
+    }
 
     QMimeDatabase db;
     const auto mt = db.mimeTypeForFile(path, QMimeDatabase::MatchContent);
@@ -133,4 +160,32 @@ void QuickLookDialog::showFile(const QString &path) {
         else showText(path);
     }
     show(); raise(); activateWindow();
+}
+
+void QuickLookDialog::navigateNext() {
+    if (currentFilePath.isEmpty() || !pane) return;
+    
+    QFileInfo fi(currentFilePath);
+    QDir dir(fi.absolutePath());
+    QStringList files = dir.entryList(QDir::Files, QDir::Name);
+    int currentIndex = files.indexOf(fi.fileName());
+    
+    if (currentIndex >= 0 && currentIndex < files.count() - 1) {
+        QString nextFile = dir.absoluteFilePath(files[currentIndex + 1]);
+        showFile(nextFile);
+    }
+}
+
+void QuickLookDialog::navigatePrevious() {
+    if (currentFilePath.isEmpty() || !pane) return;
+    
+    QFileInfo fi(currentFilePath);
+    QDir dir(fi.absolutePath());
+    QStringList files = dir.entryList(QDir::Files, QDir::Name);
+    int currentIndex = files.indexOf(fi.fileName());
+    
+    if (currentIndex > 0) {
+        QString prevFile = dir.absoluteFilePath(files[currentIndex - 1]);
+        showFile(prevFile);
+    }
 }

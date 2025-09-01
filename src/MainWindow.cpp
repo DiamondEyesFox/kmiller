@@ -13,6 +13,7 @@
 #include <QIcon>
 #include <QLabel>
 #include <QStatusBar>
+#include <QSettings>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     resize(1500, 900);
@@ -81,16 +82,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     statusBar()->addWidget(statusLabel);
     
     addInitialTab(QUrl::fromLocalFile(QDir::homePath()));
+    
+    // Load saved settings
+    loadSettings();
 }
 
 void MainWindow::buildMenus() {
     auto file = menuBar()->addMenu("&File");
-    auto *helpMenu = menuBar()->addMenu("&Help");
-    QAction *actNotes = helpMenu->addAction("Patch Notes…");
-    connect(actNotes, &QAction::triggered, this, []{
-        QUrl u = QUrl::fromLocalFile("/opt/kmiller/PATCHNOTES-latest.md");
-        QDesktopServices::openUrl(u);
-    });
     file->addAction(QIcon::fromTheme("tab-new"), "New Tab\tCtrl+T", this, &MainWindow::newTab);
     file->addAction(QIcon::fromTheme("tab-close"), "Close Tab\tCtrl+W", this, &MainWindow::closeCurrentTab);
     file->addSeparator();
@@ -148,6 +146,11 @@ void MainWindow::buildMenus() {
     tools->addAction("Preferences…", this, &MainWindow::openPreferences);
 
     auto help = menuBar()->addMenu("&Help");
+    QAction *actNotes = help->addAction("Patch Notes…");
+    connect(actNotes, &QAction::triggered, this, []{
+        QUrl u = QUrl::fromLocalFile("/opt/kmiller/PATCHNOTES-latest.md");
+        QDesktopServices::openUrl(u);
+    });
     help->addAction("About", []{});
 }
 void MainWindow::addInitialTab(const QUrl &url) {
@@ -192,5 +195,34 @@ void MainWindow::updateStatusBar(int totalFiles, int selectedFiles) {
         statusLabel->setText(QString("%1 of %2 items selected").arg(selectedFiles).arg(totalFiles));
     } else {
         statusLabel->setText(QString("%1 of %2 items selected").arg(selectedFiles).arg(totalFiles));
+    }
+}
+
+void MainWindow::loadSettings() {
+    QSettings settings;
+    
+    // Load toolbar visibility
+    bool showToolbar = settings.value("general/showToolbar", false).toBool();
+    actShowToolbar->setChecked(showToolbar);
+    tb->setVisible(showToolbar);
+    
+    // Load hidden files setting
+    bool showHidden = settings.value("general/showHiddenFiles", false).toBool();
+    actShowHidden->setChecked(showHidden);
+    if (auto *p = currentPane()) {
+        p->setShowHiddenFiles(showHidden);
+    }
+    
+    // Load preview pane setting
+    bool showPreview = settings.value("general/showPreviewPane", false).toBool();
+    actPreviewPane->setChecked(showPreview);
+    if (auto *p = currentPane()) {
+        p->setPreviewVisible(showPreview);
+    }
+    
+    // Load default view mode
+    int defaultView = settings.value("general/defaultView", 0).toInt();
+    if (auto *p = currentPane()) {
+        p->setViewMode(defaultView);
     }
 }

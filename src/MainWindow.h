@@ -54,4 +54,5 @@ private:
     void addInitialTab(const QUrl &url);
     Pane* currentPane() const;
     void buildMenus();
+    void loadSettings();
 };
