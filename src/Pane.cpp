@@ -37,6 +37,10 @@
 #include <KIO/DeleteJob>
 
 #include <poppler-qt6.h>
+#include <QKeyEvent>
+#include <QStyledItemDelegate>
+#include <QPainter>
+#include <QTimer>
 
 static bool isImageFile(const QString &path) {
     const QByteArray fmt = QImageReader::imageFormat(path);
@@ -188,6 +192,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     auto hookSel = [this](QAbstractItemView *v){
         if (!v) return;
         v->setContextMenuPolicy(Qt::CustomContextMenu);
+        v->setSelectionMode(QAbstractItemView::ExtendedSelection); // Enable multiselect like Miller view
         connect(v, &QWidget::customContextMenuRequested, this, [this, v](const QPoint &pos){
             showContextMenu(v->viewport()->mapToGlobal(pos));
         });
@@ -197,6 +202,9 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
                 this, &Pane::updateStatus);
         connect(v, &QAbstractItemView::activated, this, &Pane::onActivated); // double-click opens
         v->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        
+        // Install spacebar event filter
+        v->installEventFilter(this);
     };
     hookSel(iconView);
     hookSel(detailsView);
@@ -410,6 +418,16 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     QMenu menu;
     QAction *actOpen = menu.addAction("Open");
     QAction *actQL   = menu.addAction("Quick Look");
+    menu.addSeparator();
+    QAction *actCut = menu.addAction("Cut");
+    QAction *actCopy = menu.addAction("Copy");
+    QAction *actPaste = menu.addAction("Paste");
+    menu.addSeparator();
+    QAction *actRename = menu.addAction("Rename");
+    QAction *actDelete = menu.addAction("Delete");
+    menu.addSeparator();
+    QAction *actNewFolder = menu.addAction("New Folder");
+    
     QAction *chosen  = menu.exec(globalPos);
     if (!chosen) return;
 
@@ -419,8 +437,31 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         return;
     }
     if (chosen == actQL) {
-        if (!ql) ql = new QuickLookDialog(this);
-        if (u.isLocalFile()) ql->showFile(u.toLocalFile());
+        quickLookSelected();
+        return;
+    }
+    if (chosen == actCut) {
+        cutSelected();
+        return;
+    }
+    if (chosen == actCopy) {
+        copySelected();
+        return;
+    }
+    if (chosen == actPaste) {
+        pasteFiles();
+        return;
+    }
+    if (chosen == actRename) {
+        renameSelected();
+        return;
+    }
+    if (chosen == actDelete) {
+        deleteSelected();
+        return;
+    }
+    if (chosen == actNewFolder) {
+        createNewFolder();
         return;
     }
 }
@@ -645,4 +686,25 @@ void Pane::updateStatus() {
     }
     
     emit statusChanged(totalFiles, selectedFiles);
+}
+
+bool Pane::eventFilter(QObject *obj, QEvent *event) {
+    if (event->type() == QEvent::KeyPress) {
+        QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Space) {
+            // Handle spacebar for QuickLook in all view modes
+            auto *view = qobject_cast<QAbstractItemView*>(obj);
+            if (view) {
+                QModelIndex current = view->currentIndex();
+                if (current.isValid()) {
+                    QUrl url = urlForIndex(current);
+                    if (url.isValid()) {
+                        quickLookSelected();
+                        return true; // Event handled
+                    }
+                }
+            }
+        }
+    }
+    return QWidget::eventFilter(obj, event);
 }

@@ -70,6 +70,9 @@ private slots:
     void onActivated(const QModelIndex &idx);
     void onCurrentChanged(const QModelIndex &current, const QModelIndex &previous);
 
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override;
+
 private:
     void applyIconSize(int px);
     QUrl urlForIndex(const QModelIndex &proxyIndex) const;
