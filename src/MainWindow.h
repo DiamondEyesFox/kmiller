@@ -44,6 +44,7 @@ private:
     QAction *actNewTab;
     QAction *actCloseTab;
     QAction *actShowToolbar;
+    QAction *actShowHidden;
     QAction *actPrefs;
     QAction *actQuickLook;
     

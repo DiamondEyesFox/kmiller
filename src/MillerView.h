@@ -11,6 +11,7 @@ class MillerView : public QWidget {
 public:
     explicit MillerView(QWidget *parent = nullptr);
     void setRootUrl(const QUrl &url);
+    void setShowHiddenFiles(bool show);
 
 signals:
     void quickLookRequested(const QString &path);
@@ -27,4 +28,5 @@ private:
     QHBoxLayout *layout = nullptr;
     QVector<QListView*> columns;
     QUrl root;
+    bool m_showHiddenFiles = false;
 };

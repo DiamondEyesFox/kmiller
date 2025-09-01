@@ -53,6 +53,8 @@ add_executable(kmiller
     src/ThumbCache.h
     src/SettingsDialog.cpp
     src/SettingsDialog.h
+    src/PropertiesDialog.cpp
+    src/PropertiesDialog.h
 )
 
 target_include_directories(kmiller PRIVATE src)

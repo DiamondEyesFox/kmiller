@@ -119,6 +119,13 @@ void MainWindow::buildMenus() {
     actShowToolbar->setChecked(false);
     connect(actShowToolbar, &QAction::toggled, this, &MainWindow::toggleToolbar);
 
+    actShowHidden = view->addAction("Show Hidden Files");
+    actShowHidden->setCheckable(true);
+    actShowHidden->setChecked(false);
+    connect(actShowHidden, &QAction::toggled, this, [this](bool on){
+        if (auto *p = currentPane()) p->setShowHiddenFiles(on);
+    });
+
     view->addSeparator();
     actPreviewPane = view->addAction("Preview Pane");
     actPreviewPane->setCheckable(true);

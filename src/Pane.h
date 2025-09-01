@@ -2,6 +2,7 @@
 #include <QWidget>
 #include <QUrl>
 #include <QPoint>
+#include <QAbstractProxyModel>
 
 class QToolBar;
 class QComboBox;
@@ -59,6 +60,10 @@ public:
     void setPreviewVisible(bool on);
     bool previewVisible() const { return m_previewVisible; }
     
+    // Hidden files
+    void setShowHiddenFiles(bool show);
+    bool showHiddenFiles() const { return m_showHiddenFiles; }
+    
     // Status updates
     void updateStatus();
 
@@ -112,6 +117,7 @@ private:
 
     QUrl currentRoot;
     bool m_previewVisible = false;
+    bool m_showHiddenFiles = false;
     
     // Navigation history
     QList<QUrl> m_history;

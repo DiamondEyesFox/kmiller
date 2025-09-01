@@ -17,7 +17,7 @@
 static QWidget* makeScroll(QWidget *child) {
     auto *sa = new QScrollArea;
     sa->setWidgetResizable(true);
-    child->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    child->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     sa->setWidget(child);
     return sa;
 }
@@ -73,7 +73,20 @@ void QuickLookDialog::showImage(const QString &path) {
     reader.setAutoTransform(true);
     const QImage img = reader.read();
     if (img.isNull()) { stack->setCurrentIndex(3); return; }
-    label->setPixmap(QPixmap::fromImage(img));
+    
+    // Calculate available space (dialog size minus margins/chrome)
+    int availableWidth = width() - 40;   // Account for margins
+    int availableHeight = height() - 80; // Account for title bar, info bar, margins
+    
+    QPixmap pixmap = QPixmap::fromImage(img);
+    
+    // Scale image to fit available space while maintaining aspect ratio and quality
+    if (pixmap.width() > availableWidth || pixmap.height() > availableHeight) {
+        pixmap = pixmap.scaled(availableWidth, availableHeight, 
+                              Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    }
+    
+    label->setPixmap(pixmap);
     label->adjustSize();
     stack->setCurrentIndex(0);
 }

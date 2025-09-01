@@ -45,6 +45,13 @@ void MillerView::addColumn(const QUrl &url) {
     auto *model = new QFileSystemModel(this);
     const QString rootPath = url.toLocalFile();
     model->setRootPath(rootPath);
+    
+    // Set hidden file filter based on current setting
+    QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
+    if (m_showHiddenFiles) {
+        filters |= QDir::Hidden;
+    }
+    model->setFilter(filters);
 
     auto *view = new QListView(this);
     view->setModel(model);
@@ -53,8 +60,20 @@ void MillerView::addColumn(const QUrl &url) {
     view->setSelectionBehavior(QAbstractItemView::SelectRows);
     view->setEditTriggers(QAbstractItemView::NoEditTriggers);     // no rename on dblclick
 
-    // Context menu on viewport
+    // Context menu on both view and viewport  
+    view->setContextMenuPolicy(Qt::CustomContextMenu);
     view->viewport()->setContextMenuPolicy(Qt::CustomContextMenu);
+    
+    // Connect to view's context menu signal
+    connect(view, &QWidget::customContextMenuRequested, this,
+            [this, view, model](const QPoint &pos){
+        QModelIndex idx = view->indexAt(pos);
+        QUrl u;
+        if (idx.isValid()) u = QUrl::fromLocalFile(model->filePath(idx));
+        emit contextMenuRequested(u, view->mapToGlobal(pos));
+    });
+    
+    // Also connect to viewport (backup)
     connect(view->viewport(), &QWidget::customContextMenuRequested, this,
             [this, view, model](const QPoint &vpPos){
         QModelIndex idx = view->indexAt(vpPos);
@@ -178,4 +197,19 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
         return true;
     }
     return QWidget::eventFilter(obj, event);
+}
+
+void MillerView::setShowHiddenFiles(bool show) {
+    m_showHiddenFiles = show;
+    
+    // Update all existing columns
+    for (QListView *view : columns) {
+        if (auto *model = qobject_cast<QFileSystemModel*>(view->model())) {
+            QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
+            if (show) {
+                filters |= QDir::Hidden;
+            }
+            model->setFilter(filters);
+        }
+    }
 }

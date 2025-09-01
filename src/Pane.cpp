@@ -5,6 +5,7 @@
 #include "MillerView.h"
 #include "QuickLookDialog.h"
 #include "ThumbCache.h"
+#include "PropertiesDialog.h"
 
 #include <QToolBar>
 #include <QComboBox>
@@ -41,6 +42,7 @@
 #include <QStyledItemDelegate>
 #include <QPainter>
 #include <QTimer>
+#include <QIdentityProxyModel>
 
 static bool isImageFile(const QString &path) {
     const QByteArray fmt = QImageReader::imageFormat(path);
@@ -58,6 +60,7 @@ static QString getThumbnailPath(const QUrl &url) {
     QString hash = QString(QCryptographicHash::hash(urlStr.toUtf8(), QCryptographicHash::Md5).toHex());
     return dir.absoluteFilePath(hash + ".png");
 }
+
 
 Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     auto *root = new QVBoxLayout(this);
@@ -140,6 +143,14 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     iconView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     iconView->setDragDropMode(QAbstractItemView::DragDrop);
     iconView->setDefaultDropAction(Qt::CopyAction);
+    
+    // Configure spacing like Finder - uniform grid with proper padding
+    iconView->setUniformItemSizes(true);
+    iconView->setGridSize(QSize(100, 100)); // Finder-like grid spacing
+    iconView->setSpacing(8); // Space between items
+    iconView->setWordWrap(true);
+    iconView->setTextElideMode(Qt::ElideMiddle);
+    
     stack->addWidget(iconView);
 
     detailsView = new QTreeView(this);
@@ -337,6 +348,21 @@ void Pane::setPreviewVisible(bool on) {
     }
 }
 
+void Pane::setShowHiddenFiles(bool show) {
+    m_showHiddenFiles = show;
+    if (dirModel) {
+        if (auto *lister = dirModel->dirLister()) {
+            lister->setShowHiddenFiles(show);
+            // Refresh the current directory to apply changes
+            lister->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
+        }
+    }
+    // Also update Miller view
+    if (miller) {
+        miller->setShowHiddenFiles(show);
+    }
+}
+
 void Pane::clearPreview() {
     if (previewImage) previewImage->setPixmap(QPixmap());
     if (previewText)  previewText->setPlainText(QString());
@@ -427,6 +453,8 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     QAction *actDelete = menu.addAction("Delete");
     menu.addSeparator();
     QAction *actNewFolder = menu.addAction("New Folder");
+    menu.addSeparator();
+    QAction *actProperties = menu.addAction("Properties");
     
     QAction *chosen  = menu.exec(globalPos);
     if (!chosen) return;
@@ -462,6 +490,25 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     }
     if (chosen == actNewFolder) {
         createNewFolder();
+        return;
+    }
+    if (chosen == actProperties) {
+        // Get selected URLs or fall back to current URL
+        QList<QUrl> selectedUrls = getSelectedUrls();
+        if (selectedUrls.isEmpty() && u.isValid()) {
+            selectedUrls = {u};
+        }
+        
+        if (!selectedUrls.isEmpty()) {
+            PropertiesDialog *dialog;
+            if (selectedUrls.size() == 1) {
+                dialog = new PropertiesDialog(selectedUrls.first(), this);
+            } else {
+                dialog = new PropertiesDialog(selectedUrls, this);
+            }
+            dialog->exec();
+            dialog->deleteLater();
+        }
         return;
     }
 }
@@ -708,3 +755,4 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
     }
     return QWidget::eventFilter(obj, event);
 }
+
