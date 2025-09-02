@@ -278,16 +278,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
     connect(miller, &MillerView::contextMenuRequested, this, [this](const QUrl &u, const QPoint &g){ showContextMenu(g, {u}); });
-    connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ 
-        if (m_previewVisible) updatePreviewForUrl(url); 
-        // Update breadcrumb navigation when miller view changes directories
-        if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isDir()) {
-            currentRoot = url;
-            if (nav && nav->locationUrl() != url) {
-                nav->setLocationUrl(url);
-            }
-        }
-    });
+    connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ if (m_previewVisible) updatePreviewForUrl(url); });
 
     ql = new QuickLookDialog(this);
     thumbs = new ThumbCache(this);
