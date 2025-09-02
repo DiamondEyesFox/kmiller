@@ -269,6 +269,11 @@ void MainWindow::updateStatusBar(int totalFiles, int selectedFiles) {
 void MainWindow::loadSettings() {
     QSettings settings;
     
+    // Temporarily block signals to prevent triggering saves during load
+    actShowToolbar->blockSignals(true);
+    actShowHidden->blockSignals(true);  
+    actPreviewPane->blockSignals(true);
+    
     // Load toolbar visibility
     bool showToolbar = settings.value("general/showToolbar", false).toBool();
     actShowToolbar->setChecked(showToolbar);
@@ -294,9 +299,80 @@ void MainWindow::loadSettings() {
         p->setViewMode(defaultView);
     }
     
-    // Load and apply theme
+    // Load and apply theme (track it but don't save during load)
     int theme = settings.value("general/theme", 0).toInt();
-    applyTheme(theme);
+    currentTheme = theme;  // Track current theme without saving
+    
+    // Apply theme styling directly without going through applyTheme to avoid save
+    QString styleSheet;
+    switch (theme) {
+        case 0: // Default
+            setStyleSheet("");
+            break;
+        case 1: // Dark
+            styleSheet = "QMainWindow { background-color: #2b2b2b; color: #ffffff; }"
+                "QMenuBar { background-color: #3c3c3c; color: #ffffff; border: none; }"
+                "QMenuBar::item { background-color: transparent; padding: 4px 8px; }"
+                "QMenuBar::item:selected { background-color: #555555; }"
+                "QMenu { background-color: #3c3c3c; color: #ffffff; border: 1px solid #555555; }"
+                "QMenu::item:selected { background-color: #555555; }"
+                "QToolBar { background-color: #3c3c3c; color: #ffffff; border: none; }"
+                "QStatusBar { background-color: #3c3c3c; color: #ffffff; }"
+                "QTreeView, QListView { background-color: #2b2b2b; color: #ffffff; alternate-background-color: #353535; }"
+                "QHeaderView::section { background-color: #3c3c3c; color: #ffffff; border: 1px solid #555555; }"
+                "QComboBox, QLineEdit { background-color: #3c3c3c; color: #ffffff; border: 1px solid #555555; }"
+                "QTabWidget::pane { background-color: #2b2b2b; }"
+                "QTabBar::tab { background-color: #3c3c3c; color: #ffffff; padding: 4px 8px; }"
+                "QTabBar::tab:selected { background-color: #555555; }";
+            setStyleSheet(styleSheet);
+            break;
+        case 2: // Light  
+            styleSheet = "QMainWindow { background-color: #ffffff; color: #000000; }"
+                "QMenuBar { background-color: #f0f0f0; color: #000000; }"
+                "QMenu { background-color: #ffffff; color: #000000; }"
+                "QToolBar { background-color: #f0f0f0; color: #000000; }"
+                "QStatusBar { background-color: #f0f0f0; color: #000000; }"
+                "QTreeView, QListView { background-color: #ffffff; color: #000000; alternate-background-color: #f5f5f5; }"
+                "QHeaderView::section { background-color: #e0e0e0; color: #000000; }"
+                "QComboBox, QLineEdit { background-color: #ffffff; color: #000000; }"
+                "QTabWidget::pane { background-color: #ffffff; }"
+                "QTabBar::tab { background-color: #e0e0e0; color: #000000; }"
+                "QTabBar::tab:selected { background-color: #ffffff; }";
+            setStyleSheet(styleSheet);
+            break;
+        case 3: // Finder
+            styleSheet = "QMainWindow { background-color: #f6f6f6; color: #000000; }"
+                "QLabel { color: #000000; }"
+                "QMenuBar { background-color: #f6f6f6; color: #000000; border: none; }"
+                "QMenuBar::item { background-color: transparent; padding: 4px 8px; border-radius: 4px; color: #000000; }"
+                "QMenuBar::item:selected { background-color: #007aff; color: #ffffff; }"
+                "QMenu { background-color: #ffffff; color: #000000; border: 1px solid #d1d1d1; border-radius: 6px; padding: 4px; }"
+                "QMenu::item { padding: 6px 16px; border-radius: 4px; color: #000000; }"
+                "QMenu::item:selected { background-color: #007aff; color: #ffffff; }"
+                "QToolBar { background-color: #f6f6f6; color: #000000; border: none; padding: 4px; }"
+                "QToolBar QLabel { color: #000000; }"
+                "QStatusBar { background-color: #f6f6f6; color: #666666; border-top: 1px solid #d1d1d1; }"
+                "QStatusBar QLabel { color: #666666; }"
+                "QTreeView, QListView { background-color: #ffffff; color: #000000; alternate-background-color: #f8f8f8; selection-background-color: #007aff; selection-color: #ffffff; border: 1px solid #d1d1d1; border-radius: 6px; }"
+                "QTreeView::item, QListView::item { color: #000000; }"
+                "QTreeView::item:selected, QListView::item:selected { background-color: #007aff; color: #ffffff; }"
+                "QHeaderView::section { background-color: #f1f1f1; color: #000000; border: none; border-right: 1px solid #d1d1d1; padding: 4px 8px; font-weight: 500; }"
+                "QComboBox { background-color: #ffffff; color: #000000; border: 1px solid #d1d1d1; border-radius: 6px; padding: 4px 8px; selection-background-color: #007aff; }"
+                "QComboBox:hover { border-color: #007aff; }"
+                "QComboBox:focus { border-color: #007aff; outline: none; }"
+                "QComboBox::drop-down { border: none; }"
+                "QComboBox::down-arrow { color: #000000; }"
+                "QComboBox QAbstractItemView { background-color: #ffffff; color: #000000; selection-background-color: #007aff; }"
+                "QComboBox QAbstractItemView::item { color: #000000; padding: 4px; }"
+                "QComboBox QAbstractItemView::item:selected { background-color: #007aff; color: #ffffff; }";
+            setStyleSheet(styleSheet);
+            break;
+    }
+    
+    // Re-enable signals
+    actShowToolbar->blockSignals(false);
+    actShowHidden->blockSignals(false);
+    actPreviewPane->blockSignals(false);
 }
 
 void MainWindow::saveSettings() {

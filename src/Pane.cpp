@@ -253,6 +253,14 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     detailsView->setDragDropMode(QAbstractItemView::DragDrop);
     detailsView->setDefaultDropAction(Qt::CopyAction);
     detailsView->setContextMenuPolicy(Qt::CustomContextMenu);
+    
+    // Load column visibility settings
+    QSettings settings;
+    for (int i = 0; i < 7; ++i) {  // 7 columns: Name, Size, Date Modified, Permissions, Owner, Group, Type
+        bool visible = settings.value(QString("view/column%1Visible").arg(i), true).toBool();
+        detailsView->header()->setSectionHidden(i, !visible);
+    }
+    
     stack->addWidget(detailsView);
 
     compactView = new QListView(this);
@@ -676,6 +684,9 @@ void Pane::showHeaderContextMenu(const QPoint &pos) {
         connect(action, &QAction::toggled, this, [this, i](bool visible) {
             if (detailsView && detailsView->header()) {
                 detailsView->header()->setSectionHidden(i, !visible);
+                // Save column visibility setting
+                QSettings settings;
+                settings.setValue(QString("view/column%1Visible").arg(i), visible);
             }
         });
     }
