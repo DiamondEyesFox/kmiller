@@ -237,6 +237,8 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     iconView->setSpacing(8); // Space between items
     iconView->setWordWrap(true);
     iconView->setTextElideMode(Qt::ElideMiddle);
+    iconView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(iconView, &QListView::customContextMenuRequested, this, &Pane::showEmptySpaceContextMenu);
     
     stack->addWidget(iconView);
 
@@ -246,9 +248,13 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     detailsView->setAlternatingRowColors(true);
     detailsView->setSortingEnabled(true);
     detailsView->header()->setStretchLastSection(true);
+    detailsView->header()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(detailsView->header(), &QHeaderView::customContextMenuRequested, this, &Pane::showHeaderContextMenu);
     detailsView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     detailsView->setDragDropMode(QAbstractItemView::DragDrop);
     detailsView->setDefaultDropAction(Qt::CopyAction);
+    detailsView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(detailsView, &QTreeView::customContextMenuRequested, this, &Pane::showEmptySpaceContextMenu);
     stack->addWidget(detailsView);
 
     compactView = new QListView(this);
@@ -257,6 +263,8 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     compactView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     compactView->setDragDropMode(QAbstractItemView::DragDrop);
     compactView->setDefaultDropAction(Qt::CopyAction);
+    compactView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(compactView, &QListView::customContextMenuRequested, this, &Pane::showEmptySpaceContextMenu);
     stack->addWidget(compactView);
 
     miller = new MillerView(this);
@@ -270,7 +278,16 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
     connect(miller, &MillerView::contextMenuRequested, this, [this](const QUrl &u, const QPoint &g){ showContextMenu(g, {u}); });
-    connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ if (m_previewVisible) updatePreviewForUrl(url); });
+    connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ 
+        if (m_previewVisible) updatePreviewForUrl(url); 
+        // Update breadcrumb navigation when miller view changes directories
+        if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isDir()) {
+            currentRoot = url;
+            if (nav && nav->locationUrl() != url) {
+                nav->setLocationUrl(url);
+            }
+        }
+    });
 
     ql = new QuickLookDialog(this);
     thumbs = new ThumbCache(this);
@@ -645,6 +662,84 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         }
         return;
     }
+}
+
+void Pane::showHeaderContextMenu(const QPoint &pos) {
+    if (!detailsView) return;
+    
+    QHeaderView *header = detailsView->header();
+    QMenu menu(this);
+    
+    // Add options for each column
+    QStringList columnNames = {"Name", "Size", "Type", "Date Modified", "Permissions"};
+    
+    for (int i = 0; i < columnNames.size(); ++i) {
+        QAction *action = menu.addAction(columnNames[i]);
+        action->setCheckable(true);
+        action->setChecked(!header->isSectionHidden(i));
+        action->setData(i);
+        
+        connect(action, &QAction::toggled, this, [this, i](bool visible) {
+            if (detailsView && detailsView->header()) {
+                detailsView->header()->setSectionHidden(i, !visible);
+            }
+        });
+    }
+    
+    menu.addSeparator();
+    menu.addAction("Reset to Default", [this]() {
+        if (detailsView && detailsView->header()) {
+            QHeaderView *header = detailsView->header();
+            for (int i = 0; i < 5; ++i) {
+                header->setSectionHidden(i, false);
+            }
+            header->resizeSections(QHeaderView::ResizeToContents);
+        }
+    });
+    
+    menu.exec(header->mapToGlobal(pos));
+}
+
+void Pane::showEmptySpaceContextMenu(const QPoint &pos) {
+    // Only show context menu if clicking on empty space (not on an item)
+    auto *view = qobject_cast<QAbstractItemView*>(sender());
+    if (!view) return;
+    
+    QModelIndex index = view->indexAt(pos);
+    if (index.isValid()) return; // Clicked on an item, don't show empty space menu
+    
+    QMenu menu(this);
+    
+    // Add basic folder operations
+    QAction *newFolderAction = menu.addAction("New Folder");
+    newFolderAction->setShortcut(QKeySequence("Ctrl+Shift+N"));
+    connect(newFolderAction, &QAction::triggered, this, &Pane::createNewFolder);
+    
+    menu.addSeparator();
+    
+    // Add paste if clipboard has content
+    bool canPaste = !clipboardUrls.isEmpty();
+    QAction *pasteAction = menu.addAction(isCutOperation ? "Move Items Here" : "Paste Items Here");
+    pasteAction->setEnabled(canPaste);
+    pasteAction->setShortcut(QKeySequence::Paste);
+    connect(pasteAction, &QAction::triggered, this, &Pane::pasteFiles);
+    
+    menu.addSeparator();
+    
+    // View options
+    auto *viewMenu = menu.addMenu("View");
+    viewMenu->addAction("Icons", [this]() { setViewMode(0); });
+    viewMenu->addAction("Details", [this]() { setViewMode(1); });
+    viewMenu->addAction("Compact", [this]() { setViewMode(2); });
+    viewMenu->addAction("Miller Columns", [this]() { setViewMode(3); });
+    
+    viewMenu->addSeparator();
+    QAction *showHiddenAction = viewMenu->addAction("Show Hidden Files");
+    showHiddenAction->setCheckable(true);
+    showHiddenAction->setChecked(m_showHiddenFiles);
+    connect(showHiddenAction, &QAction::toggled, this, &Pane::setShowHiddenFiles);
+    
+    menu.exec(view->mapToGlobal(pos));
 }
 
 // ---- File Operations Implementation ----
