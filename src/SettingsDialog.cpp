@@ -90,6 +90,18 @@ void SettingsDialog::setupGeneralTab() {
     m_showPreviewPane = new QCheckBox(tr("Show preview pane by default"));
     interfaceLayout->addWidget(m_showPreviewPane);
     
+    // Theme selection
+    auto *themeLayout = new QHBoxLayout;
+    themeLayout->addWidget(new QLabel(tr("Theme:")));
+    
+    m_theme = new QComboBox;
+    m_theme->addItems({tr("Default"), tr("Dark"), tr("Light")});
+    m_theme->setToolTip(tr("Choose the application theme"));
+    themeLayout->addWidget(m_theme);
+    themeLayout->addStretch();
+    
+    interfaceLayout->addLayout(themeLayout);
+    
     // Default view
     auto *viewLayout = new QHBoxLayout;
     viewLayout->addWidget(new QLabel(tr("Default view mode:")));
@@ -195,6 +207,7 @@ void SettingsDialog::loadSettings() {
     m_showToolbar->setChecked(settings.value("general/showToolbar", false).toBool());
     m_showPreviewPane->setChecked(settings.value("general/showPreviewPane", false).toBool());
     m_defaultView->setCurrentIndex(settings.value("general/defaultView", 0).toInt());
+    m_theme->setCurrentIndex(settings.value("general/theme", 0).toInt());
     
     // View settings
     int iconSize = settings.value("view/iconSize", 64).toInt();
@@ -219,6 +232,7 @@ void SettingsDialog::saveSettings() {
     settings.setValue("general/showToolbar", m_showToolbar->isChecked());
     settings.setValue("general/showPreviewPane", m_showPreviewPane->isChecked());
     settings.setValue("general/defaultView", m_defaultView->currentIndex());
+    settings.setValue("general/theme", m_theme->currentIndex());
     
     // View settings
     settings.setValue("view/iconSize", m_iconSize->value());
@@ -241,6 +255,7 @@ void SettingsDialog::resetToDefaults() {
     m_showToolbar->setChecked(false);
     m_showPreviewPane->setChecked(false);
     m_defaultView->setCurrentIndex(0); // Icons
+    m_theme->setCurrentIndex(0); // Default
     
     // View defaults
     m_iconSize->setValue(64);

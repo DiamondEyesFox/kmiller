@@ -68,18 +68,26 @@ void MillerView::addColumn(const QUrl &url) {
     connect(view, &QWidget::customContextMenuRequested, this,
             [this, view, model](const QPoint &pos){
         QModelIndex idx = view->indexAt(pos);
-        QUrl u;
-        if (idx.isValid()) u = QUrl::fromLocalFile(model->filePath(idx));
-        emit contextMenuRequested(u, view->mapToGlobal(pos));
+        if (idx.isValid()) {
+            QUrl u = QUrl::fromLocalFile(model->filePath(idx));
+            emit contextMenuRequested(u, view->mapToGlobal(pos));
+        } else {
+            // Empty space context menu
+            emit emptySpaceContextMenuRequested(view->mapToGlobal(pos));
+        }
     });
     
     // Also connect to viewport (backup)
     connect(view->viewport(), &QWidget::customContextMenuRequested, this,
             [this, view, model](const QPoint &vpPos){
         QModelIndex idx = view->indexAt(vpPos);
-        QUrl u;
-        if (idx.isValid()) u = QUrl::fromLocalFile(model->filePath(idx));
-        emit contextMenuRequested(u, view->viewport()->mapToGlobal(vpPos));
+        if (idx.isValid()) {
+            QUrl u = QUrl::fromLocalFile(model->filePath(idx));
+            emit contextMenuRequested(u, view->viewport()->mapToGlobal(vpPos));
+        } else {
+            // Empty space context menu
+            emit emptySpaceContextMenuRequested(view->viewport()->mapToGlobal(vpPos));
+        }
     });
 
     // ---- Open helper (used by double-click and Right/Enter) ----

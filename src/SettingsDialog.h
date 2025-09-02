@@ -31,6 +31,7 @@ private:
     QCheckBox *m_showPreviewPane;
     QCheckBox *m_showToolbar;
     QComboBox *m_defaultView;
+    QComboBox *m_theme;
     
     // View settings
     QSpinBox *m_iconSize;

@@ -62,4 +62,5 @@ private:
     void buildMenus();
     void loadSettings();
     void saveSettings();
+    void applyTheme(int theme);
 };

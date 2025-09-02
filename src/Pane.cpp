@@ -278,6 +278,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
     connect(miller, &MillerView::contextMenuRequested, this, [this](const QUrl &u, const QPoint &g){ showContextMenu(g, {u}); });
+    connect(miller, &MillerView::emptySpaceContextMenuRequested, this, [this](const QPoint &g){ showEmptySpaceContextMenu(g); });
     connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ if (m_previewVisible) updatePreviewForUrl(url); });
 
     ql = new QuickLookDialog(this);
@@ -661,8 +662,8 @@ void Pane::showHeaderContextMenu(const QPoint &pos) {
     QHeaderView *header = detailsView->header();
     QMenu menu(this);
     
-    // Add options for each column
-    QStringList columnNames = {"Name", "Size", "Type", "Date Modified", "Permissions"};
+    // Add options for each column (in KDirModel order: Name, Size, ModifiedTime, Permissions, Owner, Group, Type)
+    QStringList columnNames = {"Name", "Size", "Date Modified", "Permissions", "Owner", "Group", "Type"};
     
     for (int i = 0; i < columnNames.size(); ++i) {
         QAction *action = menu.addAction(columnNames[i]);
@@ -681,7 +682,7 @@ void Pane::showHeaderContextMenu(const QPoint &pos) {
     menu.addAction("Reset to Default", [this]() {
         if (detailsView && detailsView->header()) {
             QHeaderView *header = detailsView->header();
-            for (int i = 0; i < 5; ++i) {
+            for (int i = 0; i < 7; ++i) {
                 header->setSectionHidden(i, false);
             }
             header->resizeSections(QHeaderView::ResizeToContents);
@@ -692,12 +693,16 @@ void Pane::showHeaderContextMenu(const QPoint &pos) {
 }
 
 void Pane::showEmptySpaceContextMenu(const QPoint &pos) {
-    // Only show context menu if clicking on empty space (not on an item)
+    // For miller view, pos is already global; for other views, it's local
     auto *view = qobject_cast<QAbstractItemView*>(sender());
-    if (!view) return;
+    QPoint globalPos = pos;
     
-    QModelIndex index = view->indexAt(pos);
-    if (index.isValid()) return; // Clicked on an item, don't show empty space menu
+    // Check if this is from a regular view (not miller)
+    if (view) {
+        QModelIndex index = view->indexAt(pos);
+        if (index.isValid()) return; // Clicked on an item, don't show empty space menu
+        globalPos = view->mapToGlobal(pos);
+    }
     
     QMenu menu(this);
     
@@ -730,7 +735,7 @@ void Pane::showEmptySpaceContextMenu(const QPoint &pos) {
     showHiddenAction->setChecked(m_showHiddenFiles);
     connect(showHiddenAction, &QAction::toggled, this, &Pane::setShowHiddenFiles);
     
-    menu.exec(view->mapToGlobal(pos));
+    menu.exec(globalPos);
 }
 
 // ---- File Operations Implementation ----
