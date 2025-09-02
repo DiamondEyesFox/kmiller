@@ -19,6 +19,14 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     MainWindow(QWidget *parent=nullptr);
+    
+    // Public getters for current state (for SettingsDialog)
+    bool isToolbarVisible() const { return actShowToolbar->isChecked(); }
+    bool isPreviewPaneVisible() const { return actPreviewPane->isChecked(); }
+    bool areHiddenFilesVisible() const { return actShowHidden->isChecked(); }
+    int getCurrentTheme() const { return currentTheme; }
+    int getCurrentViewMode() const;
+
 public slots:
     void updateStatusBar(int totalFiles, int selectedFiles);
 

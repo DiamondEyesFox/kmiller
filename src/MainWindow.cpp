@@ -150,11 +150,7 @@ void MainWindow::buildMenus() {
     actShowToolbar = view->addAction("Show Toolbar");
     actShowToolbar->setCheckable(true);
     actShowToolbar->setChecked(false);
-    connect(actShowToolbar, &QAction::toggled, this, [this](bool on){
-        toggleToolbar(on);
-        QSettings settings;
-        settings.setValue("general/showToolbar", on);
-    });
+    connect(actShowToolbar, &QAction::toggled, this, &MainWindow::toggleToolbar);
 
     actShowHidden = view->addAction("Show Hidden Files");
     actShowHidden->setCheckable(true);
@@ -169,8 +165,6 @@ void MainWindow::buildMenus() {
     actPreviewPane->setChecked(false);
     connect(actPreviewPane, &QAction::toggled, this, [this](bool on){
         if (auto *p = currentPane()) p->setPreviewVisible(on);
-        QSettings settings;
-        settings.setValue("general/showPreviewPane", on);
     });
 
     view->addSeparator();
@@ -241,19 +235,6 @@ void MainWindow::toggleToolbar(bool on) { tb->setVisible(on); }
 void MainWindow::openPreferences() { 
     SettingsDialog dlg(this); 
     connect(&dlg, &SettingsDialog::settingsApplied, this, &MainWindow::loadSettings);
-    
-    // Before showing dialog, update its state to match current main window state
-    // This ensures the dialog shows the actual current state, not just saved settings
-    QSettings settings;
-    settings.setValue("general/showToolbar", actShowToolbar->isChecked());
-    settings.setValue("general/showHiddenFiles", actShowHidden->isChecked());
-    settings.setValue("general/showPreviewPane", actPreviewPane->isChecked());
-    settings.setValue("general/theme", currentTheme);
-    if (auto *p = currentPane()) {
-        settings.setValue("general/defaultView", p->currentViewMode());
-    }
-    settings.sync();
-    
     if (dlg.exec() == QDialog::Accepted) {
         loadSettings(); // Reload settings to sync UI
     }
@@ -262,6 +243,13 @@ void MainWindow::setViewIcons(){ if (auto p=currentPane()) p->setViewMode(0); }
 void MainWindow::setViewDetails(){ if (auto p=currentPane()) p->setViewMode(1); }
 void MainWindow::setViewCompact(){ if (auto p=currentPane()) p->setViewMode(2); }
 void MainWindow::setViewMiller(){ if (auto p=currentPane()) p->setViewMode(3); }
+
+int MainWindow::getCurrentViewMode() const {
+    if (auto *p = currentPane()) {
+        return p->currentViewMode();
+    }
+    return 0; // Default to Icons
+}
 void MainWindow::quickLook(){ if (auto p=currentPane()) p->quickLookSelected(); 
 }
 
@@ -414,11 +402,6 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 
 void MainWindow::applyTheme(int theme) {
     currentTheme = theme;  // Track current theme
-    
-    // Save theme setting immediately  
-    QSettings settings;
-    settings.setValue("general/theme", theme);
-    
     QString styleSheet;
     
     switch (theme) {

@@ -1,4 +1,5 @@
 #include "SettingsDialog.h"
+#include "MainWindow.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -202,12 +203,21 @@ void SettingsDialog::setupAdvancedTab() {
 void SettingsDialog::loadSettings() {
     QSettings settings;
     
-    // General settings
-    m_showHiddenFiles->setChecked(settings.value("general/showHiddenFiles", false).toBool());
-    m_showToolbar->setChecked(settings.value("general/showToolbar", false).toBool());
-    m_showPreviewPane->setChecked(settings.value("general/showPreviewPane", false).toBool());
-    m_defaultView->setCurrentIndex(settings.value("general/defaultView", 0).toInt());
-    m_theme->setCurrentIndex(settings.value("general/theme", 0).toInt());
+    // General settings - get current state from MainWindow if possible, otherwise from settings
+    if (auto *mainWin = qobject_cast<MainWindow*>(parentWidget())) {
+        m_showHiddenFiles->setChecked(mainWin->areHiddenFilesVisible());
+        m_showToolbar->setChecked(mainWin->isToolbarVisible());
+        m_showPreviewPane->setChecked(mainWin->isPreviewPaneVisible());
+        m_defaultView->setCurrentIndex(mainWin->getCurrentViewMode());
+        m_theme->setCurrentIndex(mainWin->getCurrentTheme());
+    } else {
+        // Fallback to settings file
+        m_showHiddenFiles->setChecked(settings.value("general/showHiddenFiles", false).toBool());
+        m_showToolbar->setChecked(settings.value("general/showToolbar", false).toBool());
+        m_showPreviewPane->setChecked(settings.value("general/showPreviewPane", false).toBool());
+        m_defaultView->setCurrentIndex(settings.value("general/defaultView", 0).toInt());
+        m_theme->setCurrentIndex(settings.value("general/theme", 0).toInt());
+    }
     
     // View settings
     int iconSize = settings.value("view/iconSize", 64).toInt();
