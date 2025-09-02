@@ -150,7 +150,11 @@ void MainWindow::buildMenus() {
     actShowToolbar = view->addAction("Show Toolbar");
     actShowToolbar->setCheckable(true);
     actShowToolbar->setChecked(false);
-    connect(actShowToolbar, &QAction::toggled, this, &MainWindow::toggleToolbar);
+    connect(actShowToolbar, &QAction::toggled, this, [this](bool on){
+        toggleToolbar(on);
+        QSettings settings;
+        settings.setValue("general/showToolbar", on);
+    });
 
     actShowHidden = view->addAction("Show Hidden Files");
     actShowHidden->setCheckable(true);
@@ -165,6 +169,8 @@ void MainWindow::buildMenus() {
     actPreviewPane->setChecked(false);
     connect(actPreviewPane, &QAction::toggled, this, [this](bool on){
         if (auto *p = currentPane()) p->setPreviewVisible(on);
+        QSettings settings;
+        settings.setValue("general/showPreviewPane", on);
     });
 
     view->addSeparator();
@@ -296,27 +302,34 @@ void MainWindow::loadSettings() {
 void MainWindow::saveSettings() {
     QSettings settings;
     
-    // Save toolbar visibility
+    // General settings (save what we can track from main window state)
     settings.setValue("general/showToolbar", actShowToolbar->isChecked());
-    
-    // Save hidden files setting
     settings.setValue("general/showHiddenFiles", actShowHidden->isChecked());
-    
-    // Save preview pane setting
     settings.setValue("general/showPreviewPane", actPreviewPane->isChecked());
+    settings.setValue("general/theme", currentTheme);
     
     // Save current view mode from active pane
     if (auto *p = currentPane()) {
         settings.setValue("general/defaultView", p->currentViewMode());
     }
+    
+    // Don't overwrite other settings that we don't track in MainWindow
+    // (view settings, advanced settings, etc. are managed by SettingsDialog)
+    // Only save what MainWindow actually manages to avoid data loss
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
-    saveSettings();
+    // Settings are now saved immediately when changed, no need to save on close
     QMainWindow::closeEvent(event);
 }
 
 void MainWindow::applyTheme(int theme) {
+    currentTheme = theme;  // Track current theme
+    
+    // Save theme setting immediately  
+    QSettings settings;
+    settings.setValue("general/theme", theme);
+    
     QString styleSheet;
     
     switch (theme) {
@@ -362,7 +375,6 @@ void MainWindow::applyTheme(int theme) {
         case 3: // Finder
             styleSheet = 
                 "QMainWindow { background-color: #f6f6f6; color: #000000; }"
-                "QWidget { background-color: #f6f6f6; color: #000000; }"
                 "QLabel { color: #000000; }"
                 "QMenuBar { background-color: #f6f6f6; color: #000000; border: none; }"
                 "QMenuBar::item { background-color: transparent; padding: 4px 8px; border-radius: 4px; color: #000000; }"
@@ -392,10 +404,15 @@ void MainWindow::applyTheme(int theme) {
                 "QComboBox { "
                     "background-color: #ffffff; color: #000000; "
                     "border: 1px solid #d1d1d1; border-radius: 6px; "
-                    "padding: 4px 8px; "
+                    "padding: 4px 8px; selection-background-color: #007aff; "
                 "}"
                 "QComboBox:hover { border-color: #007aff; }"
-                "QComboBox QAbstractItemView { background-color: #ffffff; color: #000000; }"
+                "QComboBox:focus { border-color: #007aff; outline: none; }"
+                "QComboBox::drop-down { border: none; }"
+                "QComboBox::down-arrow { color: #000000; }"
+                "QComboBox QAbstractItemView { background-color: #ffffff; color: #000000; selection-background-color: #007aff; }"
+                "QComboBox QAbstractItemView::item { color: #000000; padding: 4px; }"
+                "QComboBox QAbstractItemView::item:selected { background-color: #007aff; color: #ffffff; }"
                 "QLineEdit { "
                     "background-color: #ffffff; color: #000000; "
                     "border: 1px solid #d1d1d1; border-radius: 6px; "

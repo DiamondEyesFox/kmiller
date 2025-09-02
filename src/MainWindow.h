@@ -56,6 +56,9 @@ private:
     // Status bar
     QLabel *statusLabel;
     QSlider *globalZoomSlider;
+    
+    // Current theme tracking
+    int currentTheme = 0;
 
     void addInitialTab(const QUrl &url);
     Pane* currentPane() const;
