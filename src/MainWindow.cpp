@@ -241,6 +241,19 @@ void MainWindow::toggleToolbar(bool on) { tb->setVisible(on); }
 void MainWindow::openPreferences() { 
     SettingsDialog dlg(this); 
     connect(&dlg, &SettingsDialog::settingsApplied, this, &MainWindow::loadSettings);
+    
+    // Before showing dialog, update its state to match current main window state
+    // This ensures the dialog shows the actual current state, not just saved settings
+    QSettings settings;
+    settings.setValue("general/showToolbar", actShowToolbar->isChecked());
+    settings.setValue("general/showHiddenFiles", actShowHidden->isChecked());
+    settings.setValue("general/showPreviewPane", actPreviewPane->isChecked());
+    settings.setValue("general/theme", currentTheme);
+    if (auto *p = currentPane()) {
+        settings.setValue("general/defaultView", p->currentViewMode());
+    }
+    settings.sync();
+    
     if (dlg.exec() == QDialog::Accepted) {
         loadSettings(); // Reload settings to sync UI
     }

@@ -254,12 +254,24 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     detailsView->setDefaultDropAction(Qt::CopyAction);
     detailsView->setContextMenuPolicy(Qt::CustomContextMenu);
     
-    // Load column visibility settings
+    // Load column visibility and width settings
     QSettings settings;
     for (int i = 0; i < 7; ++i) {  // 7 columns: Name, Size, Date Modified, Permissions, Owner, Group, Type
         bool visible = settings.value(QString("view/column%1Visible").arg(i), true).toBool();
         detailsView->header()->setSectionHidden(i, !visible);
+        
+        // Load column width (use default widths if not saved)
+        int width = settings.value(QString("view/column%1Width").arg(i), -1).toInt();
+        if (width > 0) {
+            detailsView->header()->resizeSection(i, width);
+        }
     }
+    
+    // Connect to save column widths when they change
+    connect(detailsView->header(), &QHeaderView::sectionResized, this, [this](int logicalIndex, int, int newSize) {
+        QSettings settings;
+        settings.setValue(QString("view/column%1Width").arg(logicalIndex), newSize);
+    });
     
     stack->addWidget(detailsView);
 
