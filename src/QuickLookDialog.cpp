@@ -73,6 +73,10 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     connect(leftShortcut, &QShortcut::activated, this, &QuickLookDialog::navigatePrevious);
     rightShortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
     connect(rightShortcut, &QShortcut::activated, this, &QuickLookDialog::navigateNext);
+    upShortcut = new QShortcut(QKeySequence(Qt::Key_Up), this);
+    connect(upShortcut, &QShortcut::activated, this, &QuickLookDialog::navigatePrevious);
+    downShortcut = new QShortcut(QKeySequence(Qt::Key_Down), this);
+    connect(downShortcut, &QShortcut::activated, this, &QuickLookDialog::navigateNext);
 }
 
 void QuickLookDialog::clearView() {
@@ -131,17 +135,34 @@ void QuickLookDialog::showFile(const QString &path) {
     info->setText(fi.fileName());
     clearView();
 
-    // Enable/disable navigation buttons based on file availability
+    // Enable/disable navigation buttons and shortcuts based on file availability and view mode
     if (pane) {
         QDir dir(fi.absolutePath());
         QStringList files = dir.entryList(QDir::Files, QDir::Name);
         int currentIndex = files.indexOf(fi.fileName());
         
-        prevBtn->setEnabled(currentIndex > 0);
-        nextBtn->setEnabled(currentIndex >= 0 && currentIndex < files.count() - 1);
+        bool canGoPrev = currentIndex > 0;
+        bool canGoNext = currentIndex >= 0 && currentIndex < files.count() - 1;
+        
+        prevBtn->setEnabled(canGoPrev);
+        nextBtn->setEnabled(canGoNext);
+        
+        // Enable/disable shortcuts based on view mode
+        int viewMode = pane->currentViewMode();
+        bool isMillerView = (viewMode == 3);
+        
+        // In miller view, use up/down keys; in other views, use left/right keys
+        leftShortcut->setEnabled(!isMillerView && canGoPrev);
+        rightShortcut->setEnabled(!isMillerView && canGoNext);
+        upShortcut->setEnabled(isMillerView && canGoPrev);
+        downShortcut->setEnabled(isMillerView && canGoNext);
     } else {
         prevBtn->setEnabled(false);
         nextBtn->setEnabled(false);
+        leftShortcut->setEnabled(false);
+        rightShortcut->setEnabled(false);
+        upShortcut->setEnabled(false);
+        downShortcut->setEnabled(false);
     }
 
     QMimeDatabase db;

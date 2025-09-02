@@ -45,6 +45,8 @@
 #include <QMessageBox>
 #include <QProcess>
 #include <QFileDialog>
+#include <QCheckBox>
+#include <QSettings>
 
 #include <poppler-qt6.h>
 #include <QKeyEvent>
@@ -372,6 +374,10 @@ void Pane::goUp() {
 void Pane::goHome() { setRoot(QUrl::fromLocalFile(QDir::homePath())); }
 
 void Pane::onViewModeChanged(int idx) { setViewMode(idx); }
+
+int Pane::currentViewMode() const {
+    return stack ? stack->currentIndex() : 0;
+}
 void Pane::onZoomChanged(int val) { applyIconSize(val); }
 void Pane::onNavigatorUrlChanged(const QUrl &url) { setRoot(url); }
 
@@ -889,6 +895,22 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     // Get MIME type
     QMimeDatabase db;
     QMimeType mimeType = db.mimeTypeForFile(filePath);
+    QString mimeTypeName = mimeType.name();
+    
+    // Check if there's already a default application for this MIME type
+    QSettings settings;
+    QString existingDefault = settings.value(QString("fileAssociations/%1").arg(mimeTypeName)).toString();
+    
+    // If there's a default app and it exists, try to use it directly
+    if (!existingDefault.isEmpty()) {
+        QStringList arguments;
+        arguments << filePath;
+        
+        if (QProcess::startDetached(existingDefault, arguments)) {
+            return; // Successfully opened with default app
+        }
+        // If it failed, continue to show dialog
+    }
     
     // Create simple dialog with common applications
     QDialog dialog(this);
@@ -904,9 +926,12 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     auto *listWidget = new QListWidget();
     layout->addWidget(listWidget);
     
+    // Add "Always use this application" checkbox
+    auto *alwaysUseCheckbox = new QCheckBox("Always open this file type with the selected application");
+    layout->addWidget(alwaysUseCheckbox);
+    
     // Add some common applications based on file type
     QStringList applications;
-    QString mimeTypeName = mimeType.name();
     
     if (mimeTypeName.startsWith("text/") || mimeTypeName.contains("json") || mimeTypeName.contains("xml")) {
         applications << "gedit" << "kate" << "nano" << "vim" << "code" << "atom";
@@ -959,6 +984,13 @@ void Pane::showOpenWithDialog(const QUrl &url) {
                 } else {
                     return;
                 }
+            }
+            
+            // Save as default application if checkbox is checked
+            if (alwaysUseCheckbox->isChecked()) {
+                QSettings settings;
+                settings.setValue(QString("fileAssociations/%1").arg(mimeTypeName), command);
+                settings.sync();
             }
             
             // Execute the command

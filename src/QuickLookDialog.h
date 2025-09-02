@@ -34,4 +34,6 @@ private:
     QShortcut *spaceShortcut = nullptr;
     QShortcut *leftShortcut = nullptr;
     QShortcut *rightShortcut = nullptr;
+    QShortcut *upShortcut = nullptr;
+    QShortcut *downShortcut = nullptr;
 };

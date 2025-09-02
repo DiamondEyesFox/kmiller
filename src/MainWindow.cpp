@@ -14,6 +14,7 @@
 #include <QLabel>
 #include <QStatusBar>
 #include <QSettings>
+#include <QCloseEvent>
 #include <QDialog>
 #include <QVBoxLayout>
 #include <QDialogButtonBox>
@@ -206,7 +207,12 @@ void MainWindow::closeCurrentTab() {
 
 void MainWindow::placeActivated(const QUrl &url) { if (auto *p = currentPane()) p->setUrl(url); }
 void MainWindow::toggleToolbar(bool on) { tb->setVisible(on); }
-void MainWindow::openPreferences() { SettingsDialog dlg(this); dlg.exec(); }
+void MainWindow::openPreferences() { 
+    SettingsDialog dlg(this); 
+    if (dlg.exec() == QDialog::Accepted) {
+        loadSettings(); // Reload settings to sync UI
+    }
+}
 void MainWindow::setViewIcons(){ if (auto p=currentPane()) p->setViewMode(0); }
 void MainWindow::setViewDetails(){ if (auto p=currentPane()) p->setViewMode(1); }
 void MainWindow::setViewCompact(){ if (auto p=currentPane()) p->setViewMode(2); }
@@ -255,6 +261,29 @@ void MainWindow::loadSettings() {
     if (auto *p = currentPane()) {
         p->setViewMode(defaultView);
     }
+}
+
+void MainWindow::saveSettings() {
+    QSettings settings;
+    
+    // Save toolbar visibility
+    settings.setValue("general/showToolbar", actShowToolbar->isChecked());
+    
+    // Save hidden files setting
+    settings.setValue("general/showHiddenFiles", actShowHidden->isChecked());
+    
+    // Save preview pane setting
+    settings.setValue("general/showPreviewPane", actPreviewPane->isChecked());
+    
+    // Save current view mode from active pane
+    if (auto *p = currentPane()) {
+        settings.setValue("general/defaultView", p->currentViewMode());
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    saveSettings();
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::showAbout() {

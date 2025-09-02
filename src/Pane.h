@@ -36,6 +36,7 @@ public:
 
     // View & navigation used by MainWindow
     void setViewMode(int idx);      // 0 Icons, 1 Details, 2 Compact, 3 Miller
+    int currentViewMode() const;
     void goUp();
     void goHome();
     void goBack();

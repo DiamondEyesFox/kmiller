@@ -21,6 +21,9 @@ public:
 public slots:
     void updateStatusBar(int totalFiles, int selectedFiles);
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private slots:
     void newTab();
     void closeCurrentTab();
@@ -56,4 +59,5 @@ private:
     Pane* currentPane() const;
     void buildMenus();
     void loadSettings();
+    void saveSettings();
 };
