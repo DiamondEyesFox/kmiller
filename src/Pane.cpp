@@ -47,6 +47,7 @@
 #include <QFileDialog>
 #include <QCheckBox>
 #include <QSettings>
+#include <QTimer>
 
 #include <poppler-qt6.h>
 #include <QKeyEvent>
@@ -154,15 +155,12 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     viewBox->addItems({"Icons","Details","Compact","Miller"});
     tb->addWidget(viewBox);
 
-    tb->addSeparator();
-    tb->addWidget(new QLabel(" Zoom "));
-    zoom = new QSlider(Qt::Horizontal, this);
-    zoom->setRange(32, 192);
-    zoom->setValue(64);
-    zoom->setFixedWidth(200);
-    tb->addWidget(zoom);
+    // Add spacer to push search to the right
+    QWidget *spacer = new QWidget();
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tb->addWidget(spacer);
     
-    tb->addSeparator();
+    // Search on the right side
     tb->addWidget(new QLabel(" Search "));
     searchBox = new QLineEdit(this);
     searchBox->setPlaceholderText("Filter files...");
@@ -179,6 +177,12 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     hsplit->setChildrenCollapsible(false);
     hsplit->setHandleWidth(3); // thinner handle
     root->addWidget(hsplit);
+
+    // Create zoom slider (for internal use, not in toolbar anymore)
+    zoom = new QSlider(Qt::Horizontal, this);
+    zoom->setRange(32, 192);
+    zoom->setValue(64);
+    zoom->setVisible(false); // Hidden, controlled from MainWindow status bar
 
     stack = new QStackedWidget(this);
     hsplit->addWidget(stack);
@@ -717,12 +721,41 @@ void Pane::createNewFolder() {
         folderName = QString("%1 %2").arg(baseName).arg(counter++);
     }
     
-    QUrl newFolderUrl = currentRoot.resolved(QUrl(folderName));
-    if (QDir().mkdir(newFolderUrl.toLocalFile())) {
+    QString newFolderPath = QDir(currentRoot.toLocalFile()).filePath(folderName);
+    if (QDir().mkpath(newFolderPath)) {
         // Refresh the directory listing to show the new folder
-        if (auto *l = dirModel->dirLister()) {
-            l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
+        if (dirModel) {
+            // Force a refresh of the KDirLister
+            if (auto *lister = dirModel->dirLister()) {
+                lister->updateDirectory(currentRoot);
+            }
         }
+        
+        // Also refresh the proxy model
+        if (proxy) {
+            proxy->invalidate();
+        }
+        
+        // Update the views
+        updateStatus();
+        
+        // Try to select the new folder
+        QTimer::singleShot(100, this, [this, folderName]() {
+            // Try to select the newly created folder
+            if (proxy) {
+                for (int i = 0; i < proxy->rowCount(); ++i) {
+                    QModelIndex idx = proxy->index(i, 0);
+                    QString fileName = idx.data(Qt::DisplayRole).toString();
+                    if (fileName == folderName) {
+                        if (auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
+                            view->setCurrentIndex(idx);
+                            view->scrollTo(idx);
+                        }
+                        break;
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -863,6 +896,13 @@ void Pane::updateStatus() {
     }
     
     emit statusChanged(totalFiles, selectedFiles);
+}
+
+void Pane::setZoomValue(int value) {
+    if (zoom) {
+        zoom->setValue(value);
+    }
+    applyIconSize(value);
 }
 
 bool Pane::eventFilter(QObject *obj, QEvent *event) {

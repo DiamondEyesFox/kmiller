@@ -4,6 +4,7 @@ class QAction;
 class QMenu;
 class QStatusBar;
 class QLabel;
+class QSlider;
 #include <QSplitter>
 #include <QTabWidget>
 #include <QToolBar>
@@ -54,6 +55,7 @@ private:
     
     // Status bar
     QLabel *statusLabel;
+    QSlider *globalZoomSlider;
 
     void addInitialTab(const QUrl &url);
     Pane* currentPane() const;

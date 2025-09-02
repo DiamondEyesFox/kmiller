@@ -18,6 +18,9 @@
 #include <QDialog>
 #include <QVBoxLayout>
 #include <QDialogButtonBox>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     resize(1500, 900);
@@ -84,6 +87,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // Setup status bar
     statusLabel = new QLabel("Ready");
     statusBar()->addWidget(statusLabel);
+    
+    // Add zoom control to status bar (right side)
+    statusBar()->addPermanentWidget(new QLabel("Zoom:"));
+    globalZoomSlider = new QSlider(Qt::Horizontal);
+    globalZoomSlider->setRange(32, 192);
+    globalZoomSlider->setValue(64);
+    globalZoomSlider->setFixedWidth(100);
+    globalZoomSlider->setStyleSheet("QSlider::groove:horizontal { height: 4px; background: #ddd; } QSlider::handle:horizontal { background: #666; width: 12px; margin: -4px 0; border-radius: 6px; }");
+    statusBar()->addPermanentWidget(globalZoomSlider);
+    
+    // Connect zoom slider to current pane
+    connect(globalZoomSlider, &QSlider::valueChanged, this, [this](int value) {
+        if (auto *p = currentPane()) {
+            p->setZoomValue(value);
+        }
+    });
     
     addInitialTab(QUrl::fromLocalFile(QDir::homePath()));
     
@@ -179,7 +198,13 @@ void MainWindow::buildMenus() {
     auto help = menuBar()->addMenu("&Help");
     QAction *actNotes = help->addAction("Patch Notes…");
     connect(actNotes, &QAction::triggered, this, []{
-        QUrl u = QUrl::fromLocalFile("/opt/kmiller/PATCHNOTES-latest.md");
+        QString patchNotesPath = QCoreApplication::applicationDirPath() + "/../PATCHNOTES.md";
+        QFileInfo patchNotesFile(patchNotesPath);
+        if (!patchNotesFile.exists()) {
+            // Try alternative path in source directory
+            patchNotesPath = QDir::homePath() + "/Downloads/kmiller/PATCHNOTES.md";
+        }
+        QUrl u = QUrl::fromLocalFile(patchNotesPath);
         QDesktopServices::openUrl(u);
     });
     help->addAction("About", this, &MainWindow::showAbout);

@@ -72,6 +72,9 @@ public:
     
     // Status updates
     void updateStatus();
+    
+    // Zoom control
+    void setZoomValue(int value);
 
 private slots:
     void onViewModeChanged(int idx);
