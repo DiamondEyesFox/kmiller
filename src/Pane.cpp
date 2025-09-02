@@ -238,7 +238,6 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     iconView->setWordWrap(true);
     iconView->setTextElideMode(Qt::ElideMiddle);
     iconView->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(iconView, &QListView::customContextMenuRequested, this, &Pane::showEmptySpaceContextMenu);
     
     stack->addWidget(iconView);
 
@@ -254,7 +253,6 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     detailsView->setDragDropMode(QAbstractItemView::DragDrop);
     detailsView->setDefaultDropAction(Qt::CopyAction);
     detailsView->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(detailsView, &QTreeView::customContextMenuRequested, this, &Pane::showEmptySpaceContextMenu);
     stack->addWidget(detailsView);
 
     compactView = new QListView(this);
@@ -264,7 +262,6 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     compactView->setDragDropMode(QAbstractItemView::DragDrop);
     compactView->setDefaultDropAction(Qt::CopyAction);
     compactView->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(compactView, &QListView::customContextMenuRequested, this, &Pane::showEmptySpaceContextMenu);
     stack->addWidget(compactView);
 
     miller = new MillerView(this);
@@ -301,7 +298,12 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
         v->setContextMenuPolicy(Qt::CustomContextMenu);
         v->setSelectionMode(QAbstractItemView::ExtendedSelection); // Enable multiselect like Miller view
         connect(v, &QWidget::customContextMenuRequested, this, [this, v](const QPoint &pos){
-            showContextMenu(v->viewport()->mapToGlobal(pos));
+            QModelIndex index = v->indexAt(pos);
+            if (index.isValid()) {
+                showContextMenu(v->viewport()->mapToGlobal(pos));
+            } else {
+                showEmptySpaceContextMenu(pos);
+            }
         });
         connect(v->selectionModel(), &QItemSelectionModel::currentChanged,
                 this, &Pane::onCurrentChanged);

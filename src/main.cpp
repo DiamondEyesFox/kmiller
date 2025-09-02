@@ -5,6 +5,7 @@
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("KMiller");
+    app.setOrganizationName("DiamondEyesFox");
     app.setApplicationVersion(KMILLER_VERSION_STR);
     
     QCommandLineParser parser;
