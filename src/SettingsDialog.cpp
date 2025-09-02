@@ -95,7 +95,7 @@ void SettingsDialog::setupGeneralTab() {
     themeLayout->addWidget(new QLabel(tr("Theme:")));
     
     m_theme = new QComboBox;
-    m_theme->addItems({tr("Default"), tr("Dark"), tr("Light")});
+    m_theme->addItems({tr("Default"), tr("Dark"), tr("Light"), tr("Finder")});
     m_theme->setToolTip(tr("Choose the application theme"));
     themeLayout->addWidget(m_theme);
     themeLayout->addStretch();
@@ -247,6 +247,7 @@ void SettingsDialog::saveSettings() {
     settings.setValue("advanced/followSymlinks", m_followSymlinks->isChecked());
     
     settings.sync();
+    emit settingsApplied();
 }
 
 void SettingsDialog::resetToDefaults() {

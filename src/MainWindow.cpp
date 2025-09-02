@@ -234,6 +234,7 @@ void MainWindow::placeActivated(const QUrl &url) { if (auto *p = currentPane()) 
 void MainWindow::toggleToolbar(bool on) { tb->setVisible(on); }
 void MainWindow::openPreferences() { 
     SettingsDialog dlg(this); 
+    connect(&dlg, &SettingsDialog::settingsApplied, this, &MainWindow::loadSettings);
     if (dlg.exec() == QDialog::Accepted) {
         loadSettings(); // Reload settings to sync UI
     }
@@ -355,6 +356,66 @@ void MainWindow::applyTheme(int theme) {
                 "QTabWidget::pane { background-color: #ffffff; }"
                 "QTabBar::tab { background-color: #e0e0e0; color: #000000; }"
                 "QTabBar::tab:selected { background-color: #ffffff; }";
+            setStyleSheet(styleSheet);
+            break;
+            
+        case 3: // Finder
+            styleSheet = 
+                "QMainWindow { background-color: #f6f6f6; color: #000000; }"
+                "QMenuBar { background-color: #f6f6f6; color: #000000; border: none; }"
+                "QMenuBar::item { background-color: transparent; padding: 4px 8px; border-radius: 4px; }"
+                "QMenuBar::item:selected { background-color: #007aff; color: #ffffff; }"
+                "QMenu { background-color: #ffffff; color: #000000; border: 1px solid #d1d1d1; border-radius: 6px; padding: 4px; }"
+                "QMenu::item { padding: 6px 16px; border-radius: 4px; }"
+                "QMenu::item:selected { background-color: #007aff; color: #ffffff; }"
+                "QToolBar { background-color: #f6f6f6; color: #000000; border: none; padding: 4px; }"
+                "QStatusBar { background-color: #f6f6f6; color: #666666; border-top: 1px solid #d1d1d1; }"
+                "QTreeView, QListView { "
+                    "background-color: #ffffff; color: #000000; "
+                    "alternate-background-color: #f8f8f8; "
+                    "selection-background-color: #007aff; "
+                    "selection-color: #ffffff; "
+                    "border: 1px solid #d1d1d1; "
+                    "border-radius: 6px; "
+                "}"
+                "QHeaderView::section { "
+                    "background-color: #f1f1f1; color: #000000; "
+                    "border: none; border-right: 1px solid #d1d1d1; "
+                    "padding: 4px 8px; font-weight: 500; "
+                "}"
+                "QComboBox { "
+                    "background-color: #ffffff; color: #000000; "
+                    "border: 1px solid #d1d1d1; border-radius: 6px; "
+                    "padding: 4px 8px; "
+                "}"
+                "QComboBox:hover { border-color: #007aff; }"
+                "QLineEdit { "
+                    "background-color: #ffffff; color: #000000; "
+                    "border: 1px solid #d1d1d1; border-radius: 6px; "
+                    "padding: 4px 8px; "
+                "}"
+                "QLineEdit:focus { border-color: #007aff; }"
+                "QTabWidget::pane { background-color: #ffffff; border: 1px solid #d1d1d1; border-radius: 6px; }"
+                "QTabBar::tab { "
+                    "background-color: #f1f1f1; color: #000000; "
+                    "padding: 6px 12px; margin-right: 2px; "
+                    "border-top-left-radius: 6px; border-top-right-radius: 6px; "
+                "}"
+                "QTabBar::tab:selected { background-color: #ffffff; border-bottom: none; }"
+                "QTabBar::tab:hover:!selected { background-color: #e8e8e8; }"
+                "QSplitter::handle { background-color: #d1d1d1; width: 1px; }"
+                "QScrollBar:vertical { "
+                    "background-color: transparent; width: 12px; "
+                    "border-radius: 6px; "
+                "}"
+                "QScrollBar::handle:vertical { "
+                    "background-color: #c1c1c1; border-radius: 6px; "
+                    "min-height: 20px; margin: 2px; "
+                "}"
+                "QScrollBar::handle:vertical:hover { background-color: #a1a1a1; }"
+                "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { "
+                    "height: 0px; "
+                "}";
             setStyleSheet(styleSheet);
             break;
     }

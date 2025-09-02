@@ -14,6 +14,9 @@ class SettingsDialog : public QDialog {
 public:
     explicit SettingsDialog(QWidget *parent=nullptr);
 
+signals:
+    void settingsApplied();
+
 private slots:
     void loadSettings();
     void saveSettings();
