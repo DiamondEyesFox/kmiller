@@ -14,11 +14,12 @@ public:
     void setRootUrl(const QUrl &url);
     void setShowHiddenFiles(bool show);
     void focusLastColumn();
+    QList<QUrl> getSelectedUrls() const;
 
 signals:
     void quickLookRequested(const QString &path);
     void contextMenuRequested(const QList<QUrl> &urls, const QPoint &globalPos);
-    void emptySpaceContextMenuRequested(const QPoint &globalPos);
+    void emptySpaceContextMenuRequested(const QUrl &folderUrl, const QPoint &globalPos);
     void selectionChanged(const QUrl &url);
     void navigatedTo(const QUrl &url);
 

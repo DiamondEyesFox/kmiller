@@ -18,8 +18,10 @@
 
 QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(parentPane) {
     // Frameless, dark, minimal - like macOS Quick Look
-    setWindowFlags(Qt::FramelessWindowHint | Qt::Dialog);
+    // Use Tool flag so it floats above main window but doesn't steal focus
+    setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
     setAttribute(Qt::WA_TranslucentBackground, false);
+    setAttribute(Qt::WA_ShowWithoutActivating, true);  // Don't steal focus when shown
     setModal(false);
     resize(800, 600);
 
@@ -169,7 +171,7 @@ void QuickLookDialog::showFile(const QString &path) {
 
     show();
     raise();
-    activateWindow();
+    // Don't call activateWindow() - let main window keep focus so arrow keys work
 }
 
 void QuickLookDialog::navigateNext() {

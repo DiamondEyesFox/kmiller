@@ -446,10 +446,22 @@ void MainWindow::applyTheme(int theme) {
                 "QTabBar::tab:selected { background-color: #555555; }"
                 "KUrlNavigator { background-color: #3c3c3c; color: #ffffff; }"
                 "KUrlNavigator QToolButton { color: #ffffff; }"
-                "KUrlNavigator QLineEdit { background-color: #3c3c3c; color: #ffffff; }";
+                "KUrlNavigator QLineEdit { background-color: #3c3c3c; color: #ffffff; }"
+                "QScrollBar:vertical { "
+                    "background-color: transparent; width: 12px; "
+                    "border-radius: 6px; "
+                "}"
+                "QScrollBar::handle:vertical { "
+                    "background-color: #555555; border-radius: 6px; "
+                    "min-height: 20px; margin: 2px; "
+                "}"
+                "QScrollBar::handle:vertical:hover { background-color: #707070; }"
+                "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { "
+                    "height: 0px; "
+                "}";
             setStyleSheet(styleSheet);
             break;
-            
+
         case 2: // Light
             styleSheet = 
                 "QMainWindow { background-color: #ffffff; color: #000000; }"

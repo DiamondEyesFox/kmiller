@@ -239,8 +239,11 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     iconView->setModel(proxy);
     iconView->setIconSize(QSize(64,64));
     iconView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    iconView->setDragEnabled(true);
+    iconView->setAcceptDrops(true);
+    iconView->setDropIndicatorShown(true);
     iconView->setDragDropMode(QAbstractItemView::DragDrop);
-    iconView->setDefaultDropAction(Qt::CopyAction);
+    iconView->setDefaultDropAction(Qt::MoveAction);  // Finder-like behavior
     
     // Configure spacing like Finder - uniform grid with proper padding
     iconView->setUniformItemSizes(true);
@@ -261,8 +264,11 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     detailsView->header()->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(detailsView->header(), &QHeaderView::customContextMenuRequested, this, &Pane::showHeaderContextMenu);
     detailsView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    detailsView->setDragEnabled(true);
+    detailsView->setAcceptDrops(true);
+    detailsView->setDropIndicatorShown(true);
     detailsView->setDragDropMode(QAbstractItemView::DragDrop);
-    detailsView->setDefaultDropAction(Qt::CopyAction);
+    detailsView->setDefaultDropAction(Qt::MoveAction);  // Finder-like behavior
     detailsView->setContextMenuPolicy(Qt::CustomContextMenu);
     
     // Load column visibility and width settings
@@ -290,8 +296,11 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     compactView->setModel(proxy);
     compactView->setUniformItemSizes(true);
     compactView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    compactView->setDragEnabled(true);
+    compactView->setAcceptDrops(true);
+    compactView->setDropIndicatorShown(true);
     compactView->setDragDropMode(QAbstractItemView::DragDrop);
-    compactView->setDefaultDropAction(Qt::CopyAction);
+    compactView->setDefaultDropAction(Qt::MoveAction);  // Finder-like behavior
     compactView->setContextMenuPolicy(Qt::CustomContextMenu);
     stack->addWidget(compactView);
 
@@ -306,8 +315,14 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
     connect(miller, &MillerView::contextMenuRequested, this, [this](const QList<QUrl> &urls, const QPoint &g){ showContextMenu(g, urls); });
-    connect(miller, &MillerView::emptySpaceContextMenuRequested, this, [this](const QPoint &g){ showEmptySpaceContextMenu(g); });
-    connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ if (m_previewVisible) updatePreviewForUrl(url); });
+    connect(miller, &MillerView::emptySpaceContextMenuRequested, this, [this](const QUrl &folderUrl, const QPoint &g){ showEmptySpaceContextMenu(g, folderUrl); });
+    connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){
+        if (m_previewVisible) updatePreviewForUrl(url);
+        // Update QuickLook if it's open
+        if (ql && ql->isVisible() && url.isLocalFile()) {
+            ql->showFile(url.toLocalFile());
+        }
+    });
     connect(miller, &MillerView::navigatedTo, this, [this](const QUrl &url){ emit urlChanged(url); });
 
     ql = new QuickLookDialog(this);
@@ -636,12 +651,36 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     QAction *actCopy = menu.addAction(multiSelect ? QString("Copy %1 Items").arg(count) : "Copy");
     actCopy->setShortcut(QKeySequence::Copy);
 
-    QAction *actPaste = menu.addAction("Paste");
-    actPaste->setShortcut(QKeySequence::Paste);
-    // Enable paste only if clipboard has URLs
+    // Paste behavior: if right-clicking a single folder, offer to paste INTO it
     const QClipboard *clipboard = QGuiApplication::clipboard();
     const QMimeData *mimeData = clipboard->mimeData();
-    actPaste->setEnabled(mimeData && mimeData->hasUrls());
+    bool canPaste = mimeData && mimeData->hasUrls();
+    bool isCutOp = canPaste && isClipboardCutOperation();
+
+    // Determine paste destination:
+    // - Right-click folder → paste INTO that folder
+    // - Right-click file → paste into same directory as that file (not currentRoot, which may be stale in Miller view)
+    QUrl pasteDestination;
+    bool pasteIntoFolder = false;
+    if (!multiSelect && firstFi.isDir()) {
+        pasteDestination = firstUrl;
+        pasteIntoFolder = true;
+    } else {
+        // Use the parent directory of the selected file
+        pasteDestination = QUrl::fromLocalFile(firstFi.absolutePath());
+    }
+
+    QString pasteLabel;
+    if (pasteIntoFolder) {
+        pasteLabel = isCutOp ? QString("Move Into \"%1\"").arg(firstFi.fileName())
+                             : QString("Paste Into \"%1\"").arg(firstFi.fileName());
+    } else {
+        pasteLabel = isCutOp ? "Move Here" : "Paste";
+    }
+
+    QAction *actPaste = menu.addAction(pasteLabel);
+    actPaste->setShortcut(QKeySequence::Paste);
+    actPaste->setEnabled(canPaste);
 
     menu.addSeparator();
 
@@ -718,7 +757,7 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         return;
     }
     if (chosen == actPaste) {
-        pasteFiles();
+        pasteFilesToDestination(pasteDestination);
         return;
     }
     if (chosen == actDuplicate) {
@@ -801,52 +840,58 @@ void Pane::showHeaderContextMenu(const QPoint &pos) {
     menu.exec(header->mapToGlobal(pos));
 }
 
-void Pane::showEmptySpaceContextMenu(const QPoint &pos) {
+void Pane::showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder) {
     // For miller view, pos is already global; for other views, it's local
     auto *view = qobject_cast<QAbstractItemView*>(sender());
     QPoint globalPos = pos;
-    
+
+    // Determine paste destination - use targetFolder if provided, otherwise currentRoot
+    QUrl pasteDestination = targetFolder.isValid() ? targetFolder : currentRoot;
+
     // Check if this is from a regular view (not miller)
     if (view) {
         QModelIndex index = view->indexAt(pos);
         if (index.isValid()) return; // Clicked on an item, don't show empty space menu
         globalPos = view->mapToGlobal(pos);
     }
-    
+
     QMenu menu(this);
-    
+
     // Add basic folder operations
     QAction *newFolderAction = menu.addAction("New Folder");
     newFolderAction->setShortcut(QKeySequence("Ctrl+Shift+N"));
     connect(newFolderAction, &QAction::triggered, this, &Pane::createNewFolder);
-    
+
     menu.addSeparator();
 
     // Add paste if clipboard has URLs
     const QClipboard *clipboard = QGuiApplication::clipboard();
     const QMimeData *mimeData = clipboard->mimeData();
     bool canPaste = mimeData && mimeData->hasUrls();
-    bool isCutOp = mimeData && mimeData->data("application/x-kde-cutselection") == "1";
-    QAction *pasteAction = menu.addAction(isCutOp ? "Move Items Here" : "Paste Items Here");
+    bool isCutOp = canPaste && isClipboardCutOperation();
+    QAction *pasteAction = menu.addAction(isCutOp ? "Move Items Here" : "Paste");
     pasteAction->setEnabled(canPaste);
     pasteAction->setShortcut(QKeySequence::Paste);
-    connect(pasteAction, &QAction::triggered, this, &Pane::pasteFiles);
-    
+
+    connect(pasteAction, &QAction::triggered, this, [this, pasteDestination]() {
+        pasteFilesToDestination(pasteDestination);
+    });
+
     menu.addSeparator();
-    
+
     // View options
     auto *viewMenu = menu.addMenu("View");
     viewMenu->addAction("Icons", [this]() { setViewMode(0); });
     viewMenu->addAction("Details", [this]() { setViewMode(1); });
     viewMenu->addAction("Compact", [this]() { setViewMode(2); });
     viewMenu->addAction("Miller Columns", [this]() { setViewMode(3); });
-    
+
     viewMenu->addSeparator();
     QAction *showHiddenAction = viewMenu->addAction("Show Hidden Files");
     showHiddenAction->setCheckable(true);
     showHiddenAction->setChecked(m_showHiddenFiles);
     connect(showHiddenAction, &QAction::toggled, this, &Pane::setShowHiddenFiles);
-    
+
     menu.exec(globalPos);
 }
 
@@ -854,9 +899,15 @@ void Pane::showEmptySpaceContextMenu(const QPoint &pos) {
 
 QList<QUrl> Pane::getSelectedUrls() const {
     QList<QUrl> urls;
+
+    // Handle Miller view specially (it's not a QAbstractItemView)
+    if (stack->currentWidget() == miller) {
+        return miller->getSelectedUrls();
+    }
+
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
     if (!v || !v->selectionModel()) return urls;
-    
+
     const auto selection = v->selectionModel()->selectedIndexes();
     for (const auto &idx : selection) {
         if (idx.column() == 0) { // avoid duplicates in details view
@@ -871,13 +922,18 @@ void Pane::copySelected() {
     QList<QUrl> urls = getSelectedUrls();
     if (urls.isEmpty()) return;
 
-    // Use system clipboard with standard MIME types
     QMimeData *mimeData = new QMimeData();
     mimeData->setUrls(urls);
 
-    // Set the standard "copy" action (as opposed to "cut")
-    // KDE/Dolphin use "application/x-kde-cutselection" to indicate cut
-    mimeData->setData("application/x-kde-cutselection", "0");
+    // For GNOME/Nautilus compatibility: x-special/gnome-copied-files format
+    // Format: "copy\nfile:///path1\nfile:///path2..."
+    QByteArray gnomeData = "copy";
+    for (const QUrl &url : urls) {
+        gnomeData += '\n' + url.toEncoded();
+    }
+    mimeData->setData("x-special/gnome-copied-files", gnomeData);
+
+    // Note: KDE's x-kde-cutselection is NOT set for copy (absence = copy)
 
     QGuiApplication::clipboard()->setMimeData(mimeData);
 }
@@ -886,17 +942,28 @@ void Pane::cutSelected() {
     QList<QUrl> urls = getSelectedUrls();
     if (urls.isEmpty()) return;
 
-    // Use system clipboard with standard MIME types
     QMimeData *mimeData = new QMimeData();
     mimeData->setUrls(urls);
 
-    // Mark as cut operation for KDE compatibility
+    // KDE/Dolphin: mark as cut operation
     mimeData->setData("application/x-kde-cutselection", "1");
+
+    // GNOME/Nautilus compatibility: x-special/gnome-copied-files format
+    // Format: "cut\nfile:///path1\nfile:///path2..."
+    QByteArray gnomeData = "cut";
+    for (const QUrl &url : urls) {
+        gnomeData += '\n' + url.toEncoded();
+    }
+    mimeData->setData("x-special/gnome-copied-files", gnomeData);
 
     QGuiApplication::clipboard()->setMimeData(mimeData);
 }
 
 void Pane::pasteFiles() {
+    pasteFilesToDestination(currentRoot);
+}
+
+void Pane::pasteFilesToDestination(const QUrl &destination) {
     const QClipboard *clipboard = QGuiApplication::clipboard();
     const QMimeData *mimeData = clipboard->mimeData();
 
@@ -905,18 +972,49 @@ void Pane::pasteFiles() {
     QList<QUrl> urls = mimeData->urls();
     if (urls.isEmpty()) return;
 
-    QUrl destDir = currentRoot;
+    // Check if cut operation - support both KDE and GNOME formats
+    bool isCut = false;
 
-    // Check if this is a cut operation (KDE compatibility)
-    bool isCut = mimeData->data("application/x-kde-cutselection") == "1";
+    // KDE format: application/x-kde-cutselection == "1"
+    QByteArray kdeData = mimeData->data("application/x-kde-cutselection");
+    if (kdeData == QByteArray("1")) {
+        isCut = true;
+    }
+
+    // GNOME format: x-special/gnome-copied-files starts with "cut\n"
+    if (!isCut) {
+        QByteArray gnomeData = mimeData->data("x-special/gnome-copied-files");
+        if (gnomeData.startsWith("cut\n") || gnomeData.startsWith("cut\r")) {
+            isCut = true;
+        }
+    }
 
     if (isCut) {
-        KIO::move(urls, destDir);
+        KIO::move(urls, destination);
         // Clear clipboard after move to prevent re-moving
         QGuiApplication::clipboard()->clear();
     } else {
-        KIO::copy(urls, destDir);
+        KIO::copy(urls, destination);
     }
+}
+
+bool Pane::isClipboardCutOperation() const {
+    const QClipboard *clipboard = QGuiApplication::clipboard();
+    const QMimeData *mimeData = clipboard->mimeData();
+    if (!mimeData) return false;
+
+    // KDE format
+    if (mimeData->data("application/x-kde-cutselection") == QByteArray("1")) {
+        return true;
+    }
+
+    // GNOME format
+    QByteArray gnomeData = mimeData->data("x-special/gnome-copied-files");
+    if (gnomeData.startsWith("cut\n") || gnomeData.startsWith("cut\r")) {
+        return true;
+    }
+
+    return false;
 }
 
 void Pane::deleteSelected() {

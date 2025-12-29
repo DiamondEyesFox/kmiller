@@ -42,7 +42,8 @@ void MillerView::addColumn(const QUrl &url) {
     auto *model = new QFileSystemModel(this);
     const QString rootPath = url.toLocalFile();
     model->setRootPath(rootPath);
-    
+    model->setReadOnly(false);  // Enable drag & drop modifications
+
     // Set hidden file filter based on current setting
     QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
     if (m_showHiddenFiles) {
@@ -57,6 +58,12 @@ void MillerView::addColumn(const QUrl &url) {
     view->setSelectionBehavior(QAbstractItemView::SelectRows);
     view->setEditTriggers(QAbstractItemView::NoEditTriggers);     // no rename on dblclick
 
+    // Enable drag and drop between columns
+    view->setDragEnabled(true);
+    view->setAcceptDrops(true);
+    view->setDropIndicatorShown(true);
+    view->setDragDropMode(QAbstractItemView::DragDrop);
+    view->setDefaultDropAction(Qt::MoveAction);  // Default to move (like Finder)
 
     // Minimal styling - let theme handle colors, just add selection behavior
     view->setStyleSheet(
@@ -83,6 +90,9 @@ void MillerView::addColumn(const QUrl &url) {
     view->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(view, &QWidget::customContextMenuRequested, this,
             [this, view, model](const QPoint &pos){
+        // Set focus to this column
+        view->setFocus();
+
         QModelIndex idx = view->indexAt(pos);
         if (idx.isValid()) {
             // Collect all selected URLs from this column
@@ -91,6 +101,8 @@ void MillerView::addColumn(const QUrl &url) {
             if (sel) {
                 const auto indexes = sel->selectedIndexes();
                 for (const QModelIndex &i : indexes) {
+                    // Only count column 0 to avoid duplicates (model has Name, Size, Type, Date columns)
+                    if (i.column() != 0) continue;
                     QString path = model->filePath(i);
                     if (!path.isEmpty()) {
                         selectedUrls.append(QUrl::fromLocalFile(path));
@@ -103,8 +115,9 @@ void MillerView::addColumn(const QUrl &url) {
             }
             emit contextMenuRequested(selectedUrls, view->mapToGlobal(pos));
         } else {
-            // Empty space context menu
-            emit emptySpaceContextMenuRequested(view->mapToGlobal(pos));
+            // Empty space context menu - pass this column's folder URL
+            QUrl folderUrl = QUrl::fromLocalFile(model->rootPath());
+            emit emptySpaceContextMenuRequested(folderUrl, view->mapToGlobal(pos));
         }
     });
 
@@ -133,8 +146,11 @@ void MillerView::addColumn(const QUrl &url) {
         }
     });
 
-    // Single-click on folder: navigate into it (Finder behavior)
+    // Single-click: set focus to this column, and navigate into folders
     connect(view, &QListView::clicked, this, [this, model, view](const QModelIndex &idx) {
+        // Always set focus to clicked column
+        view->setFocus();
+
         if (!idx.isValid()) return;
         const QString path = model->filePath(idx);
         if (path.isEmpty()) return;
@@ -145,6 +161,11 @@ void MillerView::addColumn(const QUrl &url) {
             addColumn(QUrl::fromLocalFile(path));
         }
     });
+
+    // Right-click should also set focus before showing context menu
+    connect(view, &QWidget::customContextMenuRequested, this, [view](const QPoint &) {
+        view->setFocus();
+    }, Qt::DirectConnection);  // Direct so focus is set before menu
 
     // Double-click: open files with default app
     connect(view, &QListView::doubleClicked, this, openIndex);
@@ -314,6 +335,52 @@ void MillerView::focusLastColumn() {
     if (!columns.isEmpty()) {
         columns.last()->setFocus();
     }
+}
+
+QList<QUrl> MillerView::getSelectedUrls() const {
+    QList<QUrl> urls;
+    if (columns.isEmpty()) return urls;
+
+    // Find the focused column (not necessarily the last one)
+    QListView *focusedView = nullptr;
+    for (QListView *view : columns) {
+        if (view->hasFocus()) {
+            focusedView = view;
+            break;
+        }
+    }
+    // Fallback to last column if none has focus
+    if (!focusedView) {
+        focusedView = columns.last();
+    }
+
+    auto *model = qobject_cast<QFileSystemModel*>(focusedView->model());
+    if (!model) return urls;
+
+    QItemSelectionModel *sel = focusedView->selectionModel();
+    if (!sel) return urls;
+
+    const auto indexes = sel->selectedIndexes();
+    for (const QModelIndex &idx : indexes) {
+        if (idx.column() != 0) continue;  // Only count column 0
+        QString path = model->filePath(idx);
+        if (!path.isEmpty()) {
+            urls.append(QUrl::fromLocalFile(path));
+        }
+    }
+
+    // If nothing selected, try current index
+    if (urls.isEmpty()) {
+        QModelIndex current = focusedView->currentIndex();
+        if (current.isValid()) {
+            QString path = model->filePath(current);
+            if (!path.isEmpty()) {
+                urls.append(QUrl::fromLocalFile(path));
+            }
+        }
+    }
+
+    return urls;
 }
 
 void MillerView::setShowHiddenFiles(bool show) {

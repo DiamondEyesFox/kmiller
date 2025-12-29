@@ -99,7 +99,7 @@ private:
     QUrl urlForIndex(const QModelIndex &proxyIndex) const;
     QList<QUrl> getSelectedUrls() const;
     void showHeaderContextMenu(const QPoint &pos);
-    void showEmptySpaceContextMenu(const QPoint &pos);
+    void showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder = QUrl());
     
     void generateThumbnail(const QUrl &url) const;
     QIcon getIconForFile(const QUrl &url) const;
@@ -110,6 +110,8 @@ private:
     void showOpenWithDialog(const QUrl &url);
     void compressSelected();
     void extractArchive(const QUrl &archiveUrl);
+    void pasteFilesToDestination(const QUrl &destination);
+    bool isClipboardCutOperation() const;
 
     QToolBar *tb = nullptr;
     QComboBox *viewBox = nullptr;
