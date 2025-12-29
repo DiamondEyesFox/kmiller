@@ -2,6 +2,7 @@
 #include <QWidget>
 #include <QUrl>
 #include <QVector>
+#include <QElapsedTimer>
 
 class QHBoxLayout;
 class QListView;
@@ -25,9 +26,14 @@ protected:
 private:
     void addColumn(const QUrl &url);
     void pruneColumnsAfter(QListView *view);
+    void typeToSelect(QListView *view, const QString &text);
 
     QHBoxLayout *layout = nullptr;
     QVector<QListView*> columns;
     QUrl root;
     bool m_showHiddenFiles = false;
+
+    // Type-to-select state
+    QString m_searchString;
+    QElapsedTimer m_searchTimer;
 };

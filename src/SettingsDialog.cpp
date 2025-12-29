@@ -214,8 +214,8 @@ void SettingsDialog::loadSettings() {
         // Fallback to settings file
         m_showHiddenFiles->setChecked(settings.value("general/showHiddenFiles", false).toBool());
         m_showToolbar->setChecked(settings.value("general/showToolbar", false).toBool());
-        m_showPreviewPane->setChecked(settings.value("general/showPreviewPane", false).toBool());
-        m_defaultView->setCurrentIndex(settings.value("general/defaultView", 0).toInt());
+        m_showPreviewPane->setChecked(settings.value("general/showPreviewPane", true).toBool());
+        m_defaultView->setCurrentIndex(settings.value("general/defaultView", 3).toInt());  // Miller Columns
         m_theme->setCurrentIndex(settings.value("general/theme", 0).toInt());
     }
     
@@ -261,11 +261,11 @@ void SettingsDialog::saveSettings() {
 }
 
 void SettingsDialog::resetToDefaults() {
-    // General defaults
+    // General defaults (Finder-like)
     m_showHiddenFiles->setChecked(false);
     m_showToolbar->setChecked(false);
-    m_showPreviewPane->setChecked(false);
-    m_defaultView->setCurrentIndex(0); // Icons
+    m_showPreviewPane->setChecked(true);  // Preview ON by default
+    m_defaultView->setCurrentIndex(3);     // Miller Columns by default
     m_theme->setCurrentIndex(0); // Default
     
     // View defaults

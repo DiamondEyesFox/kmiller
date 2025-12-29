@@ -60,6 +60,31 @@ void MillerView::addColumn(const QUrl &url) {
     view->setSelectionBehavior(QAbstractItemView::SelectRows);
     view->setEditTriggers(QAbstractItemView::NoEditTriggers);     // no rename on dblclick
 
+    // Finder-like visual styling for selection and focus
+    view->setStyleSheet(
+        "QListView { "
+        "  border: none; "
+        "  border-right: 1px solid #d0d0d0; "
+        "  background-color: #ffffff; "
+        "}"
+        "QListView::item { "
+        "  padding: 2px 4px; "
+        "  border-radius: 4px; "
+        "  margin: 1px 2px; "
+        "}"
+        "QListView::item:selected { "
+        "  background-color: #007aff; "
+        "  color: #ffffff; "
+        "}"
+        "QListView::item:selected:!active { "
+        "  background-color: #c0c0c0; "  // Grayed when unfocused
+        "  color: #000000; "
+        "}"
+        "QListView::item:hover:!selected { "
+        "  background-color: #e8e8e8; "
+        "}"
+    );
+
     // Context menu on both view and viewport  
     view->setContextMenuPolicy(Qt::CustomContextMenu);
     view->viewport()->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -171,7 +196,24 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
         return true;
     }
 
-    if (ke->key() == Qt::Key_Right || ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+    if (ke->key() == Qt::Key_Right) {
+        // Right arrow: only enter directories, do nothing on files (Finder behavior)
+        QModelIndex idx = view->currentIndex();
+        if (!idx.isValid()) return true;
+        const QString p = model->filePath(idx);
+        if (p.isEmpty()) return true;
+
+        QFileInfo fi(p);
+        if (fi.isDir()) {
+            pruneColumnsAfter(view);
+            addColumn(QUrl::fromLocalFile(p));
+        }
+        // On files: do nothing (classic Finder behavior)
+        return true;
+    }
+
+    if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+        // Enter/Return: enter directories OR open files
         QModelIndex idx = view->currentIndex();
         if (!idx.isValid()) return true;
         const QString p = model->filePath(idx);
@@ -187,7 +229,9 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
             job->start();
         }
         return true;
-    } else if (ke->key() == Qt::Key_Left) {
+    }
+
+    if (ke->key() == Qt::Key_Left) {
         if (columns.size() > 1) {
             QListView *last = columns.takeLast();
             layout->removeWidget(last);
@@ -204,7 +248,51 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
         }
         return true;
     }
+
+    // Type-to-select: handle printable characters (Finder behavior)
+    QString text = ke->text();
+    if (!text.isEmpty() && text.at(0).isPrint() && !ke->modifiers().testFlag(Qt::ControlModifier)) {
+        // Reset search string if more than 1 second since last keystroke
+        if (!m_searchTimer.isValid() || m_searchTimer.elapsed() > 1000) {
+            m_searchString.clear();
+        }
+        m_searchTimer.restart();
+        m_searchString += text;
+        typeToSelect(view, m_searchString);
+        return true;
+    }
+
     return QWidget::eventFilter(obj, event);
+}
+
+void MillerView::typeToSelect(QListView *view, const QString &text) {
+    auto *model = qobject_cast<QFileSystemModel*>(view->model());
+    if (!model) return;
+
+    QModelIndex root = view->rootIndex();
+    int rowCount = model->rowCount(root);
+
+    // Find first item that starts with the search string (case-insensitive)
+    for (int i = 0; i < rowCount; ++i) {
+        QModelIndex idx = model->index(i, 0, root);
+        QString fileName = model->fileName(idx);
+        if (fileName.startsWith(text, Qt::CaseInsensitive)) {
+            view->setCurrentIndex(idx);
+            view->scrollTo(idx);
+            return;
+        }
+    }
+
+    // If no prefix match, try contains match
+    for (int i = 0; i < rowCount; ++i) {
+        QModelIndex idx = model->index(i, 0, root);
+        QString fileName = model->fileName(idx);
+        if (fileName.contains(text, Qt::CaseInsensitive)) {
+            view->setCurrentIndex(idx);
+            view->scrollTo(idx);
+            return;
+        }
+    }
 }
 
 void MillerView::setShowHiddenFiles(bool show) {

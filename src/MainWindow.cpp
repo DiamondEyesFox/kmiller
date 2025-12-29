@@ -309,15 +309,15 @@ void MainWindow::loadSettings() {
         p->setShowHiddenFiles(showHidden);
     }
     
-    // Load preview pane setting
-    bool showPreview = settings.value("general/showPreviewPane", false).toBool();
+    // Load preview pane setting (default ON for Finder-like behavior)
+    bool showPreview = settings.value("general/showPreviewPane", true).toBool();
     actPreviewPane->setChecked(showPreview);
     if (auto *p = currentPane()) {
         p->setPreviewVisible(showPreview);
     }
     
     // Load default view mode
-    int defaultView = settings.value("general/defaultView", 0).toInt();
+    int defaultView = settings.value("general/defaultView", 3).toInt();  // Miller Columns by default
     if (auto *p = currentPane()) {
         p->setViewMode(defaultView);
     }

@@ -357,7 +357,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
         if (!m_viewInitialized) {
             m_viewInitialized = true;
             // Sync view box and view mode after model is ready
-            int savedView = QSettings().value("general/defaultView", 0).toInt();
+            int savedView = QSettings().value("general/defaultView", 3).toInt();  // Miller Columns by default
             viewBox->setCurrentIndex(savedView);
             setViewMode(savedView);
         }
