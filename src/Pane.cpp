@@ -305,7 +305,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     }
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
-    connect(miller, &MillerView::contextMenuRequested, this, [this](const QUrl &u, const QPoint &g){ showContextMenu(g, {u}); });
+    connect(miller, &MillerView::contextMenuRequested, this, [this](const QList<QUrl> &urls, const QPoint &g){ showContextMenu(g, urls); });
     connect(miller, &MillerView::emptySpaceContextMenuRequested, this, [this](const QPoint &g){ showEmptySpaceContextMenu(g); });
     connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ if (m_previewVisible) updatePreviewForUrl(url); });
     connect(miller, &MillerView::navigatedTo, this, [this](const QUrl &url){ emit urlChanged(url); });
@@ -579,73 +579,134 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
                               .arg((fi.size()+1023)/1024));
 }
 
-// --- temporary stub to compile; real menu can be filled later ---
-
-// ---- clean stub (temporary, just to compile) ----
 void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 {
-    QUrl u;
-    if (!urls.isEmpty()) {
-        u = urls.first();
+    // Get effective selection - either passed URLs or current selection
+    QList<QUrl> selectedUrls = urls;
+    if (selectedUrls.isEmpty()) {
+        selectedUrls = getSelectedUrls();
     }
-
-    // If no explicit URL, try the current standard view selection
-    if (!u.isValid()) {
+    if (selectedUrls.isEmpty()) {
+        // Try current index as fallback
         QAbstractItemView *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
         if (v) {
             QModelIndex idx = v->currentIndex();
             if (idx.isValid()) {
-                u = urlForIndex(idx);
+                QUrl u = urlForIndex(idx);
+                if (u.isValid()) selectedUrls.append(u);
             }
         }
     }
-    if (!u.isValid()) return;
+    if (selectedUrls.isEmpty()) return;
+
+    const int count = selectedUrls.size();
+    const bool multiSelect = count > 1;
+    const QUrl firstUrl = selectedUrls.first();
+    const QFileInfo firstFi(firstUrl.toLocalFile());
+
+    // Check if all selected items are archives (for Extract option)
+    bool allArchives = true;
+    bool anyArchive = false;
+    for (const QUrl &url : selectedUrls) {
+        if (isArchiveFile(url.toLocalFile())) {
+            anyArchive = true;
+        } else {
+            allArchives = false;
+        }
+    }
 
     QMenu menu;
-    QAction *actOpen = menu.addAction("Open");
+
+    // --- Open actions ---
+    QAction *actOpen = menu.addAction(multiSelect ? QString("Open %1 Items").arg(count) : "Open");
+    actOpen->setShortcut(QKeySequence("Ctrl+Down"));
+
     QAction *actOpenWith = menu.addAction("Open With...");
-    QAction *actQL   = menu.addAction("Quick Look");
+    actOpenWith->setEnabled(!multiSelect);  // Only for single selection
+
+    QAction *actQL = menu.addAction("Quick Look");
+    actQL->setShortcut(Qt::Key_Space);
+
     menu.addSeparator();
-    QAction *actCut = menu.addAction("Cut");
-    QAction *actCopy = menu.addAction("Copy");
+
+    // --- Edit actions ---
+    QAction *actCut = menu.addAction(multiSelect ? QString("Cut %1 Items").arg(count) : "Cut");
+    actCut->setShortcut(QKeySequence::Cut);
+
+    QAction *actCopy = menu.addAction(multiSelect ? QString("Copy %1 Items").arg(count) : "Copy");
+    actCopy->setShortcut(QKeySequence::Copy);
+
     QAction *actPaste = menu.addAction("Paste");
+    actPaste->setShortcut(QKeySequence::Paste);
+    // Enable paste only if clipboard has URLs
+    const QClipboard *clipboard = QGuiApplication::clipboard();
+    const QMimeData *mimeData = clipboard->mimeData();
+    actPaste->setEnabled(mimeData && mimeData->hasUrls());
+
     menu.addSeparator();
-    QAction *actDuplicate = menu.addAction("Duplicate");
+
+    QAction *actDuplicate = menu.addAction(multiSelect ? QString("Duplicate %1 Items").arg(count) : "Duplicate");
+    actDuplicate->setShortcut(QKeySequence("Ctrl+D"));
+
     menu.addSeparator();
+
+    // --- Rename (only for single selection) ---
     QAction *actRename = menu.addAction("Rename");
-    QAction *actDelete = menu.addAction("Delete");
+    actRename->setShortcut(Qt::Key_F2);
+    actRename->setEnabled(!multiSelect);
+
+    // --- Delete actions ---
+    QAction *actTrash = menu.addAction(multiSelect ? QString("Move %1 Items to Trash").arg(count) : "Move to Trash");
+    actTrash->setShortcut(QKeySequence("Ctrl+Backspace"));
+
+    QAction *actDelete = menu.addAction(multiSelect ? QString("Delete %1 Items Permanently").arg(count) : "Delete Permanently");
+    actDelete->setShortcut(QKeySequence("Shift+Delete"));
+
     menu.addSeparator();
-    
-    // Compress/Extract based on file type
+
+    // --- Compress/Extract ---
     QAction *actCompress = nullptr;
     QAction *actExtract = nullptr;
-    
-    QFileInfo fi(u.toLocalFile());
-    if (isArchiveFile(u.toLocalFile())) {
-        actExtract = menu.addAction("Extract Here");
+
+    // Show Extract only for single archive selection
+    if (!multiSelect && isArchiveFile(firstUrl.toLocalFile())) {
+        actExtract = menu.addAction("Extract Here...");
     } else {
-        actCompress = menu.addAction("Compress");
+        // Show Compress for any selection (including multiple files)
+        actCompress = menu.addAction(multiSelect ? QString("Compress %1 Items...").arg(count) : "Compress...");
     }
+
     menu.addSeparator();
-    
+
+    // --- Folder operations ---
     QAction *actNewFolder = menu.addAction("New Folder");
+    actNewFolder->setShortcut(QKeySequence("Ctrl+Shift+N"));
+
     menu.addSeparator();
-    QAction *actProperties = menu.addAction("Properties");
-    
-    QAction *chosen  = menu.exec(globalPos);
+
+    // --- Properties ---
+    QAction *actProperties = menu.addAction(multiSelect ? QString("Properties (%1 Items)").arg(count) : "Properties");
+    actProperties->setShortcut(QKeySequence("Alt+Return"));
+
+    // Execute menu
+    QAction *chosen = menu.exec(globalPos);
     if (!chosen) return;
 
+    // Handle actions
     if (chosen == actOpen) {
-        auto *job = new KIO::OpenUrlJob(u);
-        job->start();
+        for (const QUrl &url : selectedUrls) {
+            auto *job = new KIO::OpenUrlJob(url);
+            job->start();
+        }
         return;
     }
     if (chosen == actOpenWith) {
-        showOpenWithDialog(u);
+        showOpenWithDialog(firstUrl);
         return;
     }
     if (chosen == actQL) {
-        quickLookSelected();
+        if (!ql) ql = new QuickLookDialog(this);
+        ql->showFile(firstUrl.toLocalFile());
         return;
     }
     if (chosen == actCut) {
@@ -668,6 +729,10 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         renameSelected();
         return;
     }
+    if (chosen == actTrash) {
+        moveToTrash();
+        return;
+    }
     if (chosen == actDelete) {
         deleteSelected();
         return;
@@ -677,7 +742,7 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         return;
     }
     if (chosen == actExtract) {
-        extractArchive(u);
+        extractArchive(firstUrl);
         return;
     }
     if (chosen == actNewFolder) {
@@ -685,22 +750,14 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         return;
     }
     if (chosen == actProperties) {
-        // Get selected URLs or fall back to current URL
-        QList<QUrl> selectedUrls = getSelectedUrls();
-        if (selectedUrls.isEmpty() && u.isValid()) {
-            selectedUrls = {u};
+        PropertiesDialog *dialog;
+        if (selectedUrls.size() == 1) {
+            dialog = new PropertiesDialog(selectedUrls.first(), this);
+        } else {
+            dialog = new PropertiesDialog(selectedUrls, this);
         }
-        
-        if (!selectedUrls.isEmpty()) {
-            PropertiesDialog *dialog;
-            if (selectedUrls.size() == 1) {
-                dialog = new PropertiesDialog(selectedUrls.first(), this);
-            } else {
-                dialog = new PropertiesDialog(selectedUrls, this);
-            }
-            dialog->exec();
-            dialog->deleteLater();
-        }
+        dialog->exec();
+        dialog->deleteLater();
         return;
     }
 }
@@ -866,22 +923,31 @@ void Pane::deleteSelected() {
     const auto urls = getSelectedUrls();
     if (urls.isEmpty()) return;
 
-    // Confirmation dialog
+    // Confirmation dialog for permanent delete
     QString message;
     if (urls.size() == 1) {
         QFileInfo fi(urls.first().toLocalFile());
-        message = QString("Are you sure you want to delete \"%1\"?").arg(fi.fileName());
+        message = QString("Are you sure you want to PERMANENTLY delete \"%1\"?\n\nThis cannot be undone.").arg(fi.fileName());
     } else {
-        message = QString("Are you sure you want to delete %1 items?").arg(urls.size());
+        message = QString("Are you sure you want to PERMANENTLY delete %1 items?\n\nThis cannot be undone.").arg(urls.size());
     }
 
     QMessageBox::StandardButton reply = QMessageBox::question(
-        this, "Confirm Delete", message,
+        this, "Confirm Permanent Delete", message,
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 
     if (reply != QMessageBox::Yes) return;
 
     auto *job = KIO::del(urls);
+    Q_UNUSED(job);  // Job is auto-managed by KIO
+}
+
+void Pane::moveToTrash() {
+    const auto urls = getSelectedUrls();
+    if (urls.isEmpty()) return;
+
+    // Use KIO::trash for safe deletion (moves to trash)
+    auto *job = KIO::trash(urls);
     Q_UNUSED(job);  // Job is auto-managed by KIO
 }
 

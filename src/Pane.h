@@ -61,6 +61,7 @@ public:
     void cutSelected();
     void pasteFiles();
     void deleteSelected();
+    void moveToTrash();
     void renameSelected();
     void duplicateSelected();
     void createNewFolder();

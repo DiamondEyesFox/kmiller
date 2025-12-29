@@ -79,33 +79,32 @@ void MillerView::addColumn(const QUrl &url) {
         "}"
     );
 
-    // Context menu on both view and viewport  
+    // Context menu
     view->setContextMenuPolicy(Qt::CustomContextMenu);
-    view->viewport()->setContextMenuPolicy(Qt::CustomContextMenu);
-    
-    // Connect to view's context menu signal
     connect(view, &QWidget::customContextMenuRequested, this,
             [this, view, model](const QPoint &pos){
         QModelIndex idx = view->indexAt(pos);
         if (idx.isValid()) {
-            QUrl u = QUrl::fromLocalFile(model->filePath(idx));
-            emit contextMenuRequested(u, view->mapToGlobal(pos));
+            // Collect all selected URLs from this column
+            QList<QUrl> selectedUrls;
+            QItemSelectionModel *sel = view->selectionModel();
+            if (sel) {
+                const auto indexes = sel->selectedIndexes();
+                for (const QModelIndex &i : indexes) {
+                    QString path = model->filePath(i);
+                    if (!path.isEmpty()) {
+                        selectedUrls.append(QUrl::fromLocalFile(path));
+                    }
+                }
+            }
+            // If nothing selected, use the clicked item
+            if (selectedUrls.isEmpty()) {
+                selectedUrls.append(QUrl::fromLocalFile(model->filePath(idx)));
+            }
+            emit contextMenuRequested(selectedUrls, view->mapToGlobal(pos));
         } else {
             // Empty space context menu
             emit emptySpaceContextMenuRequested(view->mapToGlobal(pos));
-        }
-    });
-    
-    // Also connect to viewport (backup)
-    connect(view->viewport(), &QWidget::customContextMenuRequested, this,
-            [this, view, model](const QPoint &vpPos){
-        QModelIndex idx = view->indexAt(vpPos);
-        if (idx.isValid()) {
-            QUrl u = QUrl::fromLocalFile(model->filePath(idx));
-            emit contextMenuRequested(u, view->viewport()->mapToGlobal(vpPos));
-        } else {
-            // Empty space context menu
-            emit emptySpaceContextMenuRequested(view->viewport()->mapToGlobal(vpPos));
         }
     });
 
