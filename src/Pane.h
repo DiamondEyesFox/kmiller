@@ -94,7 +94,7 @@ private:
     void showHeaderContextMenu(const QPoint &pos);
     void showEmptySpaceContextMenu(const QPoint &pos);
     
-    void generateThumbnail(const QUrl &url);
+    void generateThumbnail(const QUrl &url) const;
     QIcon getIconForFile(const QUrl &url) const;
 
     void updatePreviewForUrl(const QUrl &u);
@@ -125,7 +125,7 @@ private:
     QTextEdit *previewText = nullptr;
 
     QuickLookDialog *ql = nullptr;
-    ThumbCache *thumbs = nullptr;
+    mutable ThumbCache *thumbs = nullptr;  // mutable: caching is logically const
 
     KDirModel *dirModel = nullptr;
     KDirSortFilterProxyModel *proxy = nullptr;
@@ -137,8 +137,7 @@ private:
     // Navigation history
     QList<QUrl> m_history;
     int m_historyIndex = -1;
-    
-    // Clipboard state
-    QList<QUrl> clipboardUrls;
-    bool isCutOperation = false;
+
+    // Initialization state
+    bool m_viewInitialized = false;
 };

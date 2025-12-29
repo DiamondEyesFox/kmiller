@@ -1,60 +1,68 @@
-#include <QDir>
-#include <QShortcut>
-#include <QList>
+// Local headers
 #include "Pane.h"
 #include "MillerView.h"
 #include "QuickLookDialog.h"
 #include "ThumbCache.h"
 #include "PropertiesDialog.h"
 
-#include <QToolBar>
-#include <QComboBox>
-#include <QSlider>
-#include <QStackedWidget>
-#include <QListView>
-#include <QTreeView>
-#include <QMenu>
-#include <QLabel>
-#include <QTextEdit>
-#include <QLineEdit>
-#include <QSplitter>
-#include <QVBoxLayout>
-#include <QHeaderView>
-#include <QItemSelectionModel>
+// Qt Core
+#include <QDir>
 #include <QFileInfo>
-#include <QImageReader>
-#include <QStandardPaths>
 #include <QCryptographicHash>
-#include <QFileIconProvider>
+#include <QMimeData>
 #include <QMimeDatabase>
-
-#include <KUrlNavigator>
-#include <KFileItem>
-#include <KDirModel>
-#include <KDirLister>
-#include <KDirSortFilterProxyModel>
-#include <KIO/OpenUrlJob>
-#include <KIO/CopyJob>
-#include <KIO/DeleteJob>
-#include <QMimeDatabase>
-#include <QDialog>
-#include <QVBoxLayout>
-#include <QListWidget>
-#include <QDialogButtonBox>
-#include <QInputDialog>
-#include <QMessageBox>
 #include <QProcess>
-#include <QFileDialog>
-#include <QCheckBox>
 #include <QSettings>
 #include <QTimer>
+#include <QStandardPaths>
 
-#include <poppler-qt6.h>
+// Qt GUI
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QImageReader>
 #include <QKeyEvent>
-#include <QStyledItemDelegate>
 #include <QPainter>
-#include <QTimer>
-#include <QIdentityProxyModel>
+#include <QFileIconProvider>
+
+// Qt Widgets
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFileDialog>
+#include <QHeaderView>
+#include <QInputDialog>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListView>
+#include <QListWidget>
+#include <QMenu>
+#include <QMessageBox>
+#include <QShortcut>
+#include <QSlider>
+#include <QSplitter>
+#include <QStackedWidget>
+#include <QStyledItemDelegate>
+#include <QTextEdit>
+#include <QToolBar>
+#include <QTreeView>
+#include <QVBoxLayout>
+
+// KDE Frameworks
+#include <KApplicationTrader>
+#include <KDirLister>
+#include <KDirModel>
+#include <KDirSortFilterProxyModel>
+#include <KFileItem>
+#include <KIO/ApplicationLauncherJob>
+#include <KIO/CopyJob>
+#include <KIO/DeleteJob>
+#include <KIO/OpenUrlJob>
+#include <KService>
+#include <KUrlNavigator>
+
+// External libraries
+#include <poppler-qt6.h>
 
 static bool isImageFile(const QString &path) {
     const QByteArray fmt = QImageReader::imageFormat(path);
@@ -341,8 +349,22 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
 
     applyIconSize(64);
     setRoot(startUrl);
-    viewBox->setCurrentIndex(0); // sync UI to Icons
-    setViewMode(0); // default to Icons view
+
+    // Defer view mode initialization until model is loaded to avoid race condition
+    // where the view shows stale state before model populates
+    connect(dirModel->dirLister(), &KDirLister::completed, this, [this]() {
+        // Only run once on initial load (per Pane instance)
+        if (!m_viewInitialized) {
+            m_viewInitialized = true;
+            // Sync view box and view mode after model is ready
+            int savedView = QSettings().value("general/defaultView", 0).toInt();
+            viewBox->setCurrentIndex(savedView);
+            setViewMode(savedView);
+        }
+    }, Qt::QueuedConnection);
+
+    // Set initial view box state (visual only, actual view set after model loads)
+    viewBox->setCurrentIndex(0);
 }
 
 void Pane::setRoot(const QUrl &url) {
@@ -737,10 +759,13 @@ void Pane::showEmptySpaceContextMenu(const QPoint &pos) {
     connect(newFolderAction, &QAction::triggered, this, &Pane::createNewFolder);
     
     menu.addSeparator();
-    
-    // Add paste if clipboard has content
-    bool canPaste = !clipboardUrls.isEmpty();
-    QAction *pasteAction = menu.addAction(isCutOperation ? "Move Items Here" : "Paste Items Here");
+
+    // Add paste if clipboard has URLs
+    const QClipboard *clipboard = QGuiApplication::clipboard();
+    const QMimeData *mimeData = clipboard->mimeData();
+    bool canPaste = mimeData && mimeData->hasUrls();
+    bool isCutOp = mimeData && mimeData->data("application/x-kde-cutselection") == "1";
+    QAction *pasteAction = menu.addAction(isCutOp ? "Move Items Here" : "Paste Items Here");
     pasteAction->setEnabled(canPaste);
     pasteAction->setShortcut(QKeySequence::Paste);
     connect(pasteAction, &QAction::triggered, this, &Pane::pasteFiles);
@@ -781,48 +806,100 @@ QList<QUrl> Pane::getSelectedUrls() const {
 }
 
 void Pane::copySelected() {
-    clipboardUrls = getSelectedUrls();
-    isCutOperation = false;
+    QList<QUrl> urls = getSelectedUrls();
+    if (urls.isEmpty()) return;
+
+    // Use system clipboard with standard MIME types
+    QMimeData *mimeData = new QMimeData();
+    mimeData->setUrls(urls);
+
+    // Set the standard "copy" action (as opposed to "cut")
+    // KDE/Dolphin use "application/x-kde-cutselection" to indicate cut
+    mimeData->setData("application/x-kde-cutselection", "0");
+
+    QGuiApplication::clipboard()->setMimeData(mimeData);
 }
 
 void Pane::cutSelected() {
-    clipboardUrls = getSelectedUrls();
-    isCutOperation = true;
+    QList<QUrl> urls = getSelectedUrls();
+    if (urls.isEmpty()) return;
+
+    // Use system clipboard with standard MIME types
+    QMimeData *mimeData = new QMimeData();
+    mimeData->setUrls(urls);
+
+    // Mark as cut operation for KDE compatibility
+    mimeData->setData("application/x-kde-cutselection", "1");
+
+    QGuiApplication::clipboard()->setMimeData(mimeData);
 }
 
 void Pane::pasteFiles() {
-    if (clipboardUrls.isEmpty()) return;
-    
+    const QClipboard *clipboard = QGuiApplication::clipboard();
+    const QMimeData *mimeData = clipboard->mimeData();
+
+    if (!mimeData || !mimeData->hasUrls()) return;
+
+    QList<QUrl> urls = mimeData->urls();
+    if (urls.isEmpty()) return;
+
     QUrl destDir = currentRoot;
-    if (isCutOperation) {
-        // Move operation
-        auto *job = KIO::move(clipboardUrls, destDir);
-        clipboardUrls.clear(); // Clear clipboard after move
+
+    // Check if this is a cut operation (KDE compatibility)
+    bool isCut = mimeData->data("application/x-kde-cutselection") == "1";
+
+    if (isCut) {
+        KIO::move(urls, destDir);
+        // Clear clipboard after move to prevent re-moving
+        QGuiApplication::clipboard()->clear();
     } else {
-        // Copy operation  
-        auto *job = KIO::copy(clipboardUrls, destDir);
+        KIO::copy(urls, destDir);
     }
-    isCutOperation = false;
 }
 
 void Pane::deleteSelected() {
     const auto urls = getSelectedUrls();
     if (urls.isEmpty()) return;
-    
+
+    // Confirmation dialog
+    QString message;
+    if (urls.size() == 1) {
+        QFileInfo fi(urls.first().toLocalFile());
+        message = QString("Are you sure you want to delete \"%1\"?").arg(fi.fileName());
+    } else {
+        message = QString("Are you sure you want to delete %1 items?").arg(urls.size());
+    }
+
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this, "Confirm Delete", message,
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+    if (reply != QMessageBox::Yes) return;
+
     auto *job = KIO::del(urls);
+    Q_UNUSED(job);  // Job is auto-managed by KIO
 }
 
 void Pane::renameSelected() {
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
     if (!v || !v->selectionModel()) return;
-    
+
     const QModelIndex current = v->selectionModel()->currentIndex();
-    if (current.isValid()) {
-        // Enable editing for rename functionality
-        v->setEditTriggers(QAbstractItemView::SelectedClicked);
-        v->edit(current);
-        // Restore no edit triggers after rename
-        v->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    if (!current.isValid()) return;
+
+    // Temporarily enable editing
+    v->setEditTriggers(QAbstractItemView::AllEditTriggers);
+    v->edit(current);
+
+    // Connect to delegate's closeEditor to restore no-edit state when done
+    // Use a queued single-shot to avoid issues with multiple connections
+    QAbstractItemDelegate *delegate = v->itemDelegate();
+    if (delegate) {
+        // Disconnect any previous connections to avoid stacking
+        disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
+        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [v]() {
+            v->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        }, Qt::QueuedConnection);
     }
 }
 
@@ -917,7 +994,7 @@ bool Pane::canGoForward() const {
     return m_historyIndex >= 0 && m_historyIndex < m_history.size() - 1;
 }
 
-void Pane::generateThumbnail(const QUrl &url) {
+void Pane::generateThumbnail(const QUrl &url) const {
     if (!url.isLocalFile()) return;
     
     QString path = url.toLocalFile();
@@ -991,8 +1068,8 @@ QIcon Pane::getIconForFile(const QUrl &url) const {
     // For image files, generate thumbnail asynchronously
     QString path = url.toLocalFile();
     if (isImageFile(path) || QFileInfo(path).suffix().compare("pdf", Qt::CaseInsensitive) == 0) {
-        // Generate thumbnail in the background
-        const_cast<Pane*>(this)->generateThumbnail(url);
+        // Generate thumbnail (thumbs is mutable, generateThumbnail is const)
+        generateThumbnail(url);
     }
     
     // Return default icon for now
@@ -1044,118 +1121,114 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
 
 void Pane::showOpenWithDialog(const QUrl &url) {
     if (!url.isValid() || !url.isLocalFile()) return;
-    
+
     QString filePath = url.toLocalFile();
     QFileInfo fi(filePath);
-    
+
     // Get MIME type
     QMimeDatabase db;
     QMimeType mimeType = db.mimeTypeForFile(filePath);
     QString mimeTypeName = mimeType.name();
-    
-    // Check if there's already a default application for this MIME type
-    QSettings settings;
-    QString existingDefault = settings.value(QString("fileAssociations/%1").arg(mimeTypeName)).toString();
-    
-    // If there's a default app and it exists, try to use it directly
-    if (!existingDefault.isEmpty()) {
-        QStringList arguments;
-        arguments << filePath;
-        
-        if (QProcess::startDetached(existingDefault, arguments)) {
-            return; // Successfully opened with default app
-        }
-        // If it failed, continue to show dialog
-    }
-    
-    // Create simple dialog with common applications
+
+    // Create dialog
     QDialog dialog(this);
     dialog.setWindowTitle(QString("Open %1 with...").arg(fi.fileName()));
     dialog.setModal(true);
-    dialog.resize(400, 300);
-    
+    dialog.resize(450, 350);
+
     auto *layout = new QVBoxLayout(&dialog);
-    
-    auto *label = new QLabel(QString("Choose an application to open %1:").arg(fi.fileName()));
+
+    auto *label = new QLabel(QString("Choose an application to open <b>%1</b>:").arg(fi.fileName()));
+    label->setWordWrap(true);
     layout->addWidget(label);
-    
+
     auto *listWidget = new QListWidget();
+    listWidget->setIconSize(QSize(24, 24));
     layout->addWidget(listWidget);
-    
-    // Add "Always use this application" checkbox
-    auto *alwaysUseCheckbox = new QCheckBox("Always open this file type with the selected application");
-    layout->addWidget(alwaysUseCheckbox);
-    
-    // Add some common applications based on file type
-    QStringList applications;
-    
-    if (mimeTypeName.startsWith("text/") || mimeTypeName.contains("json") || mimeTypeName.contains("xml")) {
-        applications << "gedit" << "kate" << "nano" << "vim" << "code" << "atom";
-    } else if (mimeTypeName.startsWith("image/")) {
-        applications << "gwenview" << "gimp" << "kolourpaint" << "feh" << "eog";
-    } else if (mimeTypeName.startsWith("video/")) {
-        applications << "vlc" << "mpv" << "dragon" << "totem";
-    } else if (mimeTypeName.startsWith("audio/")) {
-        applications << "vlc" << "audacity" << "amarok" << "clementine";
-    } else if (mimeTypeName == "application/pdf") {
-        applications << "okular" << "evince" << "firefox" << "chrome";
-    } else {
-        applications << "gedit" << "kate" << "firefox" << "vlc";
-    }
-    
-    // Add generic applications
-    applications << "konsole" << "xdg-open";
-    
-    for (const QString &app : applications) {
-        auto *item = new QListWidgetItem(app);
-        item->setData(Qt::UserRole, app);
+
+    // Query KDE for applications that can handle this MIME type
+    const KService::List services = KApplicationTrader::queryByMimeType(mimeTypeName);
+
+    for (const KService::Ptr &service : services) {
+        auto *item = new QListWidgetItem(QIcon::fromTheme(service->icon()), service->name());
+        item->setData(Qt::UserRole, service->desktopEntryName());
+        item->setData(Qt::UserRole + 1, QVariant::fromValue(service));
+        item->setToolTip(service->comment());
         listWidget->addItem(item);
     }
-    
+
+    // Also query for all applications if the MIME-specific list is short
+    if (services.count() < 5) {
+        listWidget->addItem(new QListWidgetItem("──── Other Applications ────"));
+        listWidget->item(listWidget->count() - 1)->setFlags(Qt::NoItemFlags);
+
+        // Add some common general-purpose apps
+        const QStringList commonApps = {"org.kde.kate", "org.kde.dolphin", "firefox", "org.gnome.gedit"};
+        for (const QString &appId : commonApps) {
+            KService::Ptr service = KService::serviceByDesktopName(appId);
+            if (service && !service->exec().isEmpty()) {
+                // Check if already in list
+                bool found = false;
+                for (int i = 0; i < listWidget->count(); ++i) {
+                    if (listWidget->item(i)->data(Qt::UserRole).toString() == appId) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    auto *item = new QListWidgetItem(QIcon::fromTheme(service->icon()), service->name());
+                    item->setData(Qt::UserRole, service->desktopEntryName());
+                    item->setData(Qt::UserRole + 1, QVariant::fromValue(service));
+                    listWidget->addItem(item);
+                }
+            }
+        }
+    }
+
     // Add custom command option
-    auto *customItem = new QListWidgetItem("Custom command...");
+    auto *customItem = new QListWidgetItem(QIcon::fromTheme("system-run"), "Run custom command...");
     customItem->setData(Qt::UserRole, "custom");
     listWidget->addItem(customItem);
-    
-    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+
+    // Select first item
+    if (listWidget->count() > 0) {
+        listWidget->setCurrentRow(0);
+    }
+
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Open | QDialogButtonBox::Cancel);
     connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     layout->addWidget(buttonBox);
-    
+
     connect(listWidget, &QListWidget::itemDoubleClicked, &dialog, &QDialog::accept);
-    
+
     if (dialog.exec() == QDialog::Accepted) {
         auto *selectedItem = listWidget->currentItem();
-        if (selectedItem) {
-            QString command = selectedItem->data(Qt::UserRole).toString();
-            
-            if (command == "custom") {
-                // Show input dialog for custom command
-                bool ok;
-                QString customCommand = QInputDialog::getText(&dialog, "Custom Command",
-                                                            "Enter command to open file with:",
-                                                            QLineEdit::Normal, "", &ok);
-                if (ok && !customCommand.isEmpty()) {
-                    command = customCommand;
-                } else {
-                    return;
+        if (!selectedItem) return;
+
+        QString appId = selectedItem->data(Qt::UserRole).toString();
+
+        if (appId == "custom") {
+            // Show input dialog for custom command
+            bool ok;
+            QString customCommand = QInputDialog::getText(&dialog, "Custom Command",
+                                                        "Enter command to open file with:",
+                                                        QLineEdit::Normal, "", &ok);
+            if (ok && !customCommand.isEmpty()) {
+                QStringList arguments;
+                arguments << filePath;
+                if (!QProcess::startDetached(customCommand, arguments)) {
+                    QMessageBox::warning(this, "Error",
+                                        QString("Failed to open file with %1").arg(customCommand));
                 }
             }
-            
-            // Save as default application if checkbox is checked
-            if (alwaysUseCheckbox->isChecked()) {
-                QSettings settings;
-                settings.setValue(QString("fileAssociations/%1").arg(mimeTypeName), command);
-                settings.sync();
-            }
-            
-            // Execute the command
-            QStringList arguments;
-            arguments << filePath;
-            
-            if (!QProcess::startDetached(command, arguments)) {
-                QMessageBox::warning(this, "Error", 
-                                    QString("Failed to open file with %1").arg(command));
+        } else {
+            // Use KDE's application launcher for proper integration
+            KService::Ptr service = selectedItem->data(Qt::UserRole + 1).value<KService::Ptr>();
+            if (service) {
+                auto *job = new KIO::ApplicationLauncherJob(service);
+                job->setUrls({url});
+                job->start();
             }
         }
     }
