@@ -1084,16 +1084,39 @@ QIcon Pane::getIconForFile(const QUrl &url) const {
 
 void Pane::updateStatus() {
     if (!proxy) return;
-    
+
     int totalFiles = proxy->rowCount();
     int selectedFiles = 0;
-    
+    qint64 selectedSize = 0;
+
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
     if (v && v->selectionModel()) {
-        selectedFiles = v->selectionModel()->selectedRows().count();
+        const auto selectedRows = v->selectionModel()->selectedRows();
+        selectedFiles = selectedRows.count();
+
+        // Calculate total size of selected files
+        for (const auto &idx : selectedRows) {
+            QUrl url = urlForIndex(idx);
+            if (url.isLocalFile()) {
+                QFileInfo fi(url.toLocalFile());
+                if (fi.isFile()) {
+                    selectedSize += fi.size();
+                }
+            }
+        }
     }
-    
-    emit statusChanged(totalFiles, selectedFiles);
+
+    emit statusChanged(totalFiles, selectedFiles, selectedSize);
+}
+
+void Pane::openSelected() {
+    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+    if (!v || !v->selectionModel()) return;
+
+    QModelIndex idx = v->currentIndex();
+    if (!idx.isValid()) return;
+
+    onActivated(idx);
 }
 
 void Pane::setZoomValue(int value) {

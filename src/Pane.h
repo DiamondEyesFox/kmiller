@@ -25,7 +25,7 @@ class Pane : public QWidget {
     Q_OBJECT
 
 signals:
-    void statusChanged(int totalFiles, int selectedFiles);
+    void statusChanged(int totalFiles, int selectedFiles, qint64 selectedSize);
     void urlChanged(const QUrl &url);
 
 public:
@@ -34,6 +34,7 @@ public:
 
     void setRoot(const QUrl &url);
     void setUrl(const QUrl &url);
+    QUrl currentUrl() const { return currentRoot; }
 
     // View & navigation used by MainWindow
     void setViewMode(int idx);      // 0 Icons, 1 Details, 2 Compact, 3 Miller
@@ -42,6 +43,7 @@ public:
     void goHome();
     void goBack();
     void goForward();
+    void openSelected();
     bool canGoBack() const;
     bool canGoForward() const;
     

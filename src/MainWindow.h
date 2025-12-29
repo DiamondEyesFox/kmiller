@@ -28,7 +28,7 @@ public:
     int getCurrentViewMode() const;
 
 public slots:
-    void updateStatusBar(int totalFiles, int selectedFiles);
+    void updateStatusBar(int totalFiles, int selectedFiles, qint64 selectedSize = 0);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -45,6 +45,7 @@ private slots:
     void setViewMiller();
     void quickLook();
     void showAbout();
+    void goToFolder();
 private:
     QAction *actPreviewPane = nullptr;
 

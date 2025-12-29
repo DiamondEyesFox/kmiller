@@ -18,11 +18,15 @@
 
 // Qt Widgets
 #include <QAction>
+#include <QCompleter>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFileSystemModel>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QStatusBar>
 #include <QVBoxLayout>
 
@@ -185,6 +189,7 @@ void MainWindow::buildMenus() {
     actShowHidden = view->addAction("Show Hidden Files");
     actShowHidden->setCheckable(true);
     actShowHidden->setChecked(false);
+    actShowHidden->setShortcut(QKeySequence("Ctrl+Shift+H"));
     connect(actShowHidden, &QAction::toggled, this, [this](bool on){
         if (auto *p = currentPane()) p->setShowHiddenFiles(on);
     });
@@ -204,8 +209,11 @@ void MainWindow::buildMenus() {
     go->addAction("Back", [this]{ if (auto p=currentPane()) p->goBack(); })->setShortcut(QKeySequence("Alt+Left"));
     go->addAction("Forward", [this]{ if (auto p=currentPane()) p->goForward(); })->setShortcut(QKeySequence("Alt+Right"));
     go->addSeparator();
-    go->addAction("Up", [this]{ if (auto p=currentPane()) p->goUp(); });
+    go->addAction("Enclosing Folder", [this]{ if (auto p=currentPane()) p->goUp(); })->setShortcut(QKeySequence("Ctrl+Up"));
+    go->addAction("Open Selection", [this]{ if (auto p=currentPane()) p->openSelected(); })->setShortcut(QKeySequence("Ctrl+Down"));
     go->addAction("Home", [this]{ if (auto p=currentPane()) p->goHome(); });
+    go->addSeparator();
+    go->addAction("Go to Folder…", [this]{ goToFolder(); })->setShortcut(QKeySequence("Ctrl+Shift+G"));
     
     go->addSeparator();
     
@@ -309,13 +317,36 @@ Pane* MainWindow::currentPane() const {
     return qobject_cast<Pane*>(tabs->currentWidget());
 }
 
-void MainWindow::updateStatusBar(int totalFiles, int selectedFiles) {
+static QString formatSize(qint64 size) {
+    if (size < 1024) {
+        return QString("%1 bytes").arg(size);
+    } else if (size < 1024 * 1024) {
+        return QString("%1 KB").arg(size / 1024);
+    } else if (size < 1024 * 1024 * 1024) {
+        return QString("%1 MB").arg(size / (1024 * 1024));
+    } else {
+        return QString("%1.%2 GB").arg(size / (1024LL * 1024 * 1024))
+                                   .arg((size / (1024LL * 1024 * 100)) % 10);
+    }
+}
+
+void MainWindow::updateStatusBar(int totalFiles, int selectedFiles, qint64 selectedSize) {
     if (selectedFiles == 0) {
         statusLabel->setText(QString("%1 items").arg(totalFiles));
     } else if (selectedFiles == 1) {
-        statusLabel->setText(QString("%1 of %2 items selected").arg(selectedFiles).arg(totalFiles));
+        if (selectedSize > 0) {
+            statusLabel->setText(QString("\"%1 of %2\" selected, %3")
+                .arg(selectedFiles).arg(totalFiles).arg(formatSize(selectedSize)));
+        } else {
+            statusLabel->setText(QString("%1 of %2 selected").arg(selectedFiles).arg(totalFiles));
+        }
     } else {
-        statusLabel->setText(QString("%1 of %2 items selected").arg(selectedFiles).arg(totalFiles));
+        if (selectedSize > 0) {
+            statusLabel->setText(QString("%1 of %2 selected, %3 total")
+                .arg(selectedFiles).arg(totalFiles).arg(formatSize(selectedSize)));
+        } else {
+            statusLabel->setText(QString("%1 of %2 selected").arg(selectedFiles).arg(totalFiles));
+        }
     }
 }
 
@@ -513,9 +544,9 @@ void MainWindow::showAbout() {
     dialog.setWindowTitle("About KMiller");
     dialog.setModal(true);
     dialog.resize(500, 400);
-    
+
     auto *layout = new QVBoxLayout(&dialog);
-    
+
     // Logo/Icon section
     auto *iconLabel = new QLabel();
     QPixmap icon = QIcon::fromTheme("folder").pixmap(64, 64);
@@ -528,12 +559,12 @@ void MainWindow::showAbout() {
     }
     iconLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(iconLabel);
-    
+
     // Title and version
     auto *titleLabel = new QLabel(QString("<h2>KMiller %1</h2>").arg(KMILLER_VERSION_STR));
     titleLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(titleLabel);
-    
+
     // Description
     auto *descLabel = new QLabel(
         "<p align='center'><b>Finder-style File Manager</b></p>"
@@ -542,9 +573,9 @@ void MainWindow::showAbout() {
     );
     descLabel->setWordWrap(true);
     layout->addWidget(descLabel);
-    
+
     layout->addSpacing(20);
-    
+
     // Features
     auto *featuresLabel = new QLabel(
         "<p><b>Key Features:</b></p>"
@@ -561,9 +592,9 @@ void MainWindow::showAbout() {
     );
     featuresLabel->setWordWrap(true);
     layout->addWidget(featuresLabel);
-    
+
     layout->addSpacing(20);
-    
+
     // Credits and info
     auto *infoLabel = new QLabel(
         "<p align='center'><small>"
@@ -574,7 +605,7 @@ void MainWindow::showAbout() {
     );
     infoLabel->setWordWrap(true);
     layout->addWidget(infoLabel);
-    
+
     // Copyright
     auto *copyrightLabel = new QLabel(
         "<p align='center'><small>"
@@ -585,11 +616,76 @@ void MainWindow::showAbout() {
     copyrightLabel->setOpenExternalLinks(true);
     copyrightLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(copyrightLabel);
-    
+
     // Close button
     auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Close);
     connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::accept);
     layout->addWidget(buttonBox);
-    
+
     dialog.exec();
+}
+
+void MainWindow::goToFolder() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Go to Folder");
+    dialog.setModal(true);
+    dialog.resize(450, 120);
+
+    auto *layout = new QVBoxLayout(&dialog);
+
+    auto *label = new QLabel("Enter the path to a folder:");
+    layout->addWidget(label);
+
+    auto *lineEdit = new QLineEdit();
+    lineEdit->setPlaceholderText("/path/to/folder");
+    // Start with current directory
+    if (auto *p = currentPane()) {
+        lineEdit->setText(p->currentUrl().toLocalFile());
+    } else {
+        lineEdit->setText(QDir::homePath());
+    }
+    lineEdit->selectAll();
+    layout->addWidget(lineEdit);
+
+    // Add completer for path completion
+    auto *completer = new QCompleter(this);
+    auto *fsModel = new QFileSystemModel(completer);
+    fsModel->setRootPath("");
+    fsModel->setFilter(QDir::AllDirs | QDir::NoDotAndDotDot);
+    completer->setModel(fsModel);
+    completer->setCompletionMode(QCompleter::PopupCompletion);
+    lineEdit->setCompleter(completer);
+
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    // Accept on Enter key
+    connect(lineEdit, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        QString path = lineEdit->text().trimmed();
+        if (path.isEmpty()) return;
+
+        // Expand ~ to home directory
+        if (path.startsWith("~")) {
+            path = QDir::homePath() + path.mid(1);
+        }
+
+        QFileInfo fi(path);
+        if (fi.exists() && fi.isDir()) {
+            if (auto *p = currentPane()) {
+                p->setUrl(QUrl::fromLocalFile(fi.absoluteFilePath()));
+            }
+        } else if (fi.exists()) {
+            // It's a file, navigate to its parent directory
+            if (auto *p = currentPane()) {
+                p->setUrl(QUrl::fromLocalFile(fi.absolutePath()));
+            }
+        } else {
+            QMessageBox::warning(this, "Invalid Path",
+                QString("The path \"%1\" does not exist.").arg(path));
+        }
+    }
 }
