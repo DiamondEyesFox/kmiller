@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSettings>
+#include <QTimer>
 #include <QUrl>
 
 // Qt GUI
@@ -107,10 +108,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         }
     });
     
-    addInitialTab(QUrl::fromLocalFile(QDir::homePath()));
-    
+    addInitialTab(QUrl::fromLocalFile("/"));
+
     // Load saved settings
     loadSettings();
+
+    // Set focus to main view after window is shown
+    QTimer::singleShot(0, this, [this]() {
+        if (auto *p = currentPane()) {
+            p->focusView();
+        }
+    });
 }
 
 void MainWindow::buildMenus() {
@@ -233,14 +241,36 @@ void MainWindow::buildMenus() {
 }
 void MainWindow::addInitialTab(const QUrl &url) {
     Pane *p = new Pane(url, this);
-    int idx = tabs->addTab(p, url.isLocalFile() ? QFileInfo(url.toLocalFile()).fileName() : url.toString());
+    QString tabName;
+    if (url.isLocalFile()) {
+        QString path = url.toLocalFile();
+        tabName = (path == "/") ? "/" : QFileInfo(path).fileName();
+    } else {
+        tabName = url.toString();
+    }
+    int idx = tabs->addTab(p, tabName);
     tabs->setCurrentIndex(idx);
-    
+
     // Connect status updates
     connect(p, &Pane::statusChanged, this, &MainWindow::updateStatusBar);
+
+    // Update tab title when navigating
+    connect(p, &Pane::urlChanged, this, [this, p](const QUrl &newUrl) {
+        int tabIdx = tabs->indexOf(p);
+        if (tabIdx >= 0) {
+            QString name;
+            if (newUrl.isLocalFile()) {
+                QString path = newUrl.toLocalFile();
+                name = (path == "/") ? "/" : QFileInfo(path).fileName();
+            } else {
+                name = newUrl.toString();
+            }
+            tabs->setTabText(tabIdx, name);
+        }
+    });
 }
 
-void MainWindow::newTab() { addInitialTab(QUrl::fromLocalFile(QDir::homePath())); }
+void MainWindow::newTab() { addInitialTab(QUrl::fromLocalFile("/")); }
 
 void MainWindow::closeCurrentTab() {
     int idx = tabs->currentIndex();
@@ -323,7 +353,7 @@ void MainWindow::loadSettings() {
     }
     
     // Load and apply theme
-    int theme = settings.value("general/theme", 0).toInt();
+    int theme = settings.value("general/theme", 1).toInt();  // Dark theme
     applyTheme(theme);  // Use single source of truth for theme styling
     
     // Re-enable signals
@@ -366,7 +396,7 @@ void MainWindow::applyTheme(int theme) {
             break;
             
         case 1: // Dark
-            styleSheet = 
+            styleSheet =
                 "QMainWindow { background-color: #2b2b2b; color: #ffffff; }"
                 "QMenuBar { background-color: #3c3c3c; color: #ffffff; border: none; }"
                 "QMenuBar::item { background-color: transparent; padding: 4px 8px; }"
@@ -378,9 +408,14 @@ void MainWindow::applyTheme(int theme) {
                 "QTreeView, QListView { background-color: #2b2b2b; color: #ffffff; alternate-background-color: #353535; }"
                 "QHeaderView::section { background-color: #3c3c3c; color: #ffffff; border: 1px solid #555555; }"
                 "QComboBox, QLineEdit { background-color: #3c3c3c; color: #ffffff; border: 1px solid #555555; }"
+                "QTextEdit { background-color: transparent; color: #ffffff; }"
+                "QLabel { color: #ffffff; }"
                 "QTabWidget::pane { background-color: #2b2b2b; }"
                 "QTabBar::tab { background-color: #3c3c3c; color: #ffffff; padding: 4px 8px; }"
-                "QTabBar::tab:selected { background-color: #555555; }";
+                "QTabBar::tab:selected { background-color: #555555; }"
+                "KUrlNavigator { background-color: #3c3c3c; color: #ffffff; }"
+                "KUrlNavigator QToolButton { color: #ffffff; }"
+                "KUrlNavigator QLineEdit { background-color: #3c3c3c; color: #ffffff; }";
             setStyleSheet(styleSheet);
             break;
             

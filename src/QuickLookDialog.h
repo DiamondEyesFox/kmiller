@@ -1,7 +1,6 @@
 #pragma once
 #include <QDialog>
 #include <QString>
-class QPushButton;
 class QStackedWidget;
 class QLabel;
 class QShortcut;
@@ -21,19 +20,13 @@ private:
     void showImage(const QString &path);
     void showPdf(const QString &path);
     void showText(const QString &path);
-    void clearView();
 
     Pane *pane = nullptr;
     QString currentFilePath;
-    QPushButton *closeBtn = nullptr;
-    QPushButton *prevBtn = nullptr;
-    QPushButton *nextBtn = nullptr;
     QStackedWidget *stack = nullptr;
-    QLabel *info = nullptr;
+    QLabel *filenameLabel = nullptr;
     QShortcut *escShortcut = nullptr;
     QShortcut *spaceShortcut = nullptr;
-    QShortcut *leftShortcut = nullptr;
-    QShortcut *rightShortcut = nullptr;
     QShortcut *upShortcut = nullptr;
     QShortcut *downShortcut = nullptr;
 };

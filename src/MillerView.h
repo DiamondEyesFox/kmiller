@@ -13,12 +13,14 @@ public:
     explicit MillerView(QWidget *parent = nullptr);
     void setRootUrl(const QUrl &url);
     void setShowHiddenFiles(bool show);
+    void focusLastColumn();
 
 signals:
     void quickLookRequested(const QString &path);
     void contextMenuRequested(const QUrl &url, const QPoint &globalPos);
     void emptySpaceContextMenuRequested(const QPoint &globalPos);
     void selectionChanged(const QUrl &url);
+    void navigatedTo(const QUrl &url);
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;

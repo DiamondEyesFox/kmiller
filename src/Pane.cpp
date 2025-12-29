@@ -44,6 +44,7 @@
 #include <QStackedWidget>
 #include <QStyledItemDelegate>
 #include <QTextEdit>
+#include <QFrame>
 #include <QToolBar>
 #include <QTreeView>
 #include <QVBoxLayout>
@@ -208,6 +209,8 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     previewText = new QTextEdit(preview);
     previewText->setReadOnly(true);
     previewText->setMinimumHeight(80);
+    previewText->setFrameStyle(QFrame::NoFrame);
+    previewText->setStyleSheet("QTextEdit { background: transparent; }");
 
     pv->addWidget(previewImage, 1);
     pv->addWidget(previewText, 0);
@@ -305,6 +308,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     connect(miller, &MillerView::contextMenuRequested, this, [this](const QUrl &u, const QPoint &g){ showContextMenu(g, {u}); });
     connect(miller, &MillerView::emptySpaceContextMenuRequested, this, [this](const QPoint &g){ showEmptySpaceContextMenu(g); });
     connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){ if (m_previewVisible) updatePreviewForUrl(url); });
+    connect(miller, &MillerView::navigatedTo, this, [this](const QUrl &url){ emit urlChanged(url); });
 
     ql = new QuickLookDialog(this);
     thumbs = new ThumbCache(this);
@@ -389,6 +393,7 @@ void Pane::setRoot(const QUrl &url) {
     }
     if (miller) miller->setRootUrl(url);
     if (nav && nav->locationUrl() != url) nav->setLocationUrl(url);
+    emit urlChanged(url);
 }
 
 void Pane::setUrl(const QUrl &url) { setRoot(url); }
@@ -1096,6 +1101,15 @@ void Pane::setZoomValue(int value) {
         zoom->setValue(value);
     }
     applyIconSize(value);
+}
+
+void Pane::focusView() {
+    // Focus the current view widget
+    if (stack->currentWidget() == miller) {
+        miller->focusLastColumn();
+    } else if (auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
+        view->setFocus();
+    }
 }
 
 bool Pane::eventFilter(QObject *obj, QEvent *event) {

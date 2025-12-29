@@ -26,6 +26,7 @@ class Pane : public QWidget {
 
 signals:
     void statusChanged(int totalFiles, int selectedFiles);
+    void urlChanged(const QUrl &url);
 
 public:
     void showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls = QList<QUrl>());
@@ -75,6 +76,9 @@ public:
     
     // Zoom control
     void setZoomValue(int value);
+
+    // Focus the active view
+    void focusView();
 
 private slots:
     void onViewModeChanged(int idx);

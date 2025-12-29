@@ -1,4 +1,5 @@
 #include "MillerView.h"
+#include <memory>
 #include <QFileSystemModel>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -36,11 +37,7 @@ void MillerView::pruneColumnsAfter(QListView *view) {
 }
 
 void MillerView::addColumn(const QUrl &url) {
-    if (!columns.isEmpty()) {
-        if (auto *prev = columns.back()) {
-            if (prev->selectionModel()) prev->selectionModel()->clearSelection();
-        }
-    }
+    emit navigatedTo(url);
 
     auto *model = new QFileSystemModel(this);
     const QString rootPath = url.toLocalFile();
@@ -60,12 +57,12 @@ void MillerView::addColumn(const QUrl &url) {
     view->setSelectionBehavior(QAbstractItemView::SelectRows);
     view->setEditTriggers(QAbstractItemView::NoEditTriggers);     // no rename on dblclick
 
-    // Finder-like visual styling for selection and focus
+
+    // Minimal styling - let theme handle colors, just add selection behavior
     view->setStyleSheet(
         "QListView { "
         "  border: none; "
-        "  border-right: 1px solid #d0d0d0; "
-        "  background-color: #ffffff; "
+        "  border-right: 1px solid palette(mid); "
         "}"
         "QListView::item { "
         "  padding: 2px 4px; "
@@ -73,15 +70,12 @@ void MillerView::addColumn(const QUrl &url) {
         "  margin: 1px 2px; "
         "}"
         "QListView::item:selected { "
-        "  background-color: #007aff; "
-        "  color: #ffffff; "
+        "  background-color: palette(highlight); "
+        "  color: palette(highlighted-text); "
         "}"
         "QListView::item:selected:!active { "
-        "  background-color: #c0c0c0; "  // Grayed when unfocused
-        "  color: #000000; "
-        "}"
-        "QListView::item:hover:!selected { "
-        "  background-color: #e8e8e8; "
+        "  background-color: #505050; "
+        "  color: palette(highlighted-text); "
         "}"
     );
 
@@ -132,17 +126,28 @@ void MillerView::addColumn(const QUrl &url) {
         }
     };
 
-    // Selection changes for preview pane
-    connect(view->selectionModel(), &QItemSelectionModel::currentChanged, this, 
+    // Selection changes for preview pane only
+    connect(view->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this, model](const QModelIndex &current, const QModelIndex &) {
         if (current.isValid()) {
-            QUrl url = QUrl::fromLocalFile(model->filePath(current));
-            emit selectionChanged(url);
+            emit selectionChanged(QUrl::fromLocalFile(model->filePath(current)));
         }
     });
 
-    // Single-click: select only (Finder column behavior)
-    // Double-click: open
+    // Single-click on folder: navigate into it (Finder behavior)
+    connect(view, &QListView::clicked, this, [this, model, view](const QModelIndex &idx) {
+        if (!idx.isValid()) return;
+        const QString path = model->filePath(idx);
+        if (path.isEmpty()) return;
+
+        QFileInfo fi(path);
+        if (fi.isDir()) {
+            pruneColumnsAfter(view);
+            addColumn(QUrl::fromLocalFile(path));
+        }
+    });
+
+    // Double-click: open files with default app
     connect(view, &QListView::doubleClicked, this, openIndex);
 
     // Keyboard handling for open/back/quicklook
@@ -152,28 +157,35 @@ void MillerView::addColumn(const QUrl &url) {
     columns.push_back(view);
     view->setFocus(Qt::OtherFocusReason);
 
-    // Select first item once content is ready
+    // Select first item after model is loaded AND sorted
     QPointer<QListView> vptr(view);
     QPointer<QFileSystemModel> mptr(model);
-    auto safeSelectFirst = [vptr, mptr]() {
-        if (!vptr || !mptr) return;
-        QModelIndex r = vptr->rootIndex();
-        int rows = mptr->rowCount(r);
-        if (rows > 0 && !vptr->currentIndex().isValid()) {
-            vptr->setCurrentIndex(mptr->index(0, 0, r));
-        }
-        if (vptr) vptr->setFocus(Qt::OtherFocusReason);
-    };
-    QTimer::singleShot(0, vptr, safeSelectFirst);
+
+    // Track if we've already selected (to avoid re-selecting on every layoutChanged)
+    auto selected = std::make_shared<bool>(false);
+
+    // When directory loads, trigger sort
     connect(model, &QFileSystemModel::directoryLoaded, this,
-        [rootPath, safeSelectFirst](const QString &loaded){
-            if (loaded == rootPath) safeSelectFirst();
+        [mptr, rootPath](const QString &loaded){
+            if (!mptr) return;
+            if (loaded == rootPath) {
+                mptr->sort(0, Qt::AscendingOrder);
+            }
         }
     );
-    connect(model, &QFileSystemModel::rowsInserted, this,
-        [vptr, mptr, safeSelectFirst](const QModelIndex &parent, int, int){
-            if (!vptr || !mptr) return;
-            if (parent == vptr->rootIndex()) safeSelectFirst();
+
+    // When layout changes (after sort), select first item
+    connect(model, &QAbstractItemModel::layoutChanged, this,
+        [vptr, mptr, selected](){
+            if (!vptr || !mptr || *selected) return;
+            QModelIndex r = vptr->rootIndex();
+            int rows = mptr->rowCount(r);
+            if (rows > 0) {
+                QModelIndex first = mptr->index(0, 0, r);
+                vptr->setCurrentIndex(first);
+                vptr->scrollTo(first, QAbstractItemView::PositionAtTop);
+                *selected = true;
+            }
         }
     );
 }
@@ -245,6 +257,10 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
                 if (m && m->rowCount(r) > 0)
                     prev->setCurrentIndex(m->index(0, 0, r));
             }
+            // Emit URL of current (previous) column
+            if (auto *m = qobject_cast<QFileSystemModel*>(prev->model())) {
+                emit navigatedTo(QUrl::fromLocalFile(m->rootPath()));
+            }
         }
         return true;
     }
@@ -292,6 +308,12 @@ void MillerView::typeToSelect(QListView *view, const QString &text) {
             view->scrollTo(idx);
             return;
         }
+    }
+}
+
+void MillerView::focusLastColumn() {
+    if (!columns.isEmpty()) {
+        columns.last()->setFocus();
     }
 }
 
