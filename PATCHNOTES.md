@@ -1,6 +1,27 @@
 # KMiller File Manager - Release Notes
 
-## Version 5.23 (Current)
+## Version 5.25 (Current)
+**Released: December 2025**
+
+### Bug Fixes
+🐛 **FileChooser URI Return**: Fixed file picker not returning selected file URIs to applications
+- Dialog was returning folder URL instead of selected file URLs
+- Now correctly returns selected file(s) via `getSelectedUrls()`
+
+---
+
+## Version 5.24
+**Released: December 2025**
+
+### Improvements
+✨ **Full Pane in File Picker**: FileChooser dialog now uses complete Pane widget instead of stripped-down MillerView
+✨ **Places Sidebar**: Added KFilePlacesView sidebar for quick navigation to common locations
+✨ **Preview Enabled**: File preview pane enabled by default in picker dialogs
+✨ **Auto-Focus**: Pane receives focus automatically when dialog opens
+
+---
+
+## Version 5.23
 **Released: December 2025**
 
 ### Major Features

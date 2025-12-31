@@ -249,12 +249,8 @@ void FileChooserDialog::onAccept()
         QString fullPath = m_currentFolder.toLocalFile() + "/" + filename;
         m_selectedUrls.append(QUrl::fromLocalFile(fullPath));
     } else {
-        // Get selection from Pane - use the currently viewed file/folder
-        QUrl currentUrl = m_pane->currentUrl();
-
-        if (currentUrl.isValid()) {
-            m_selectedUrls.append(currentUrl);
-        }
+        // Get actual file selection from Pane
+        m_selectedUrls = m_pane->getSelectedUrls();
 
         if (m_selectedUrls.isEmpty()) {
             QMessageBox::warning(this, tr("Error"), tr("Please select a file."));

@@ -83,6 +83,9 @@ public:
     // Focus the active view
     void focusView();
 
+    // Get selected URLs (for file picker dialog)
+    QList<QUrl> getSelectedUrls() const;
+
 private slots:
     void onViewModeChanged(int idx);
     void onZoomChanged(int val);
@@ -97,7 +100,6 @@ protected:
 private:
     void applyIconSize(int px);
     QUrl urlForIndex(const QModelIndex &proxyIndex) const;
-    QList<QUrl> getSelectedUrls() const;
     void showHeaderContextMenu(const QPoint &pos);
     void showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder = QUrl());
     
