@@ -1,5 +1,5 @@
 #include "FileChooserDialog.h"
-#include "MillerView.h"
+#include "Pane.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -7,19 +7,31 @@
 #include <QComboBox>
 #include <QPushButton>
 #include <QLabel>
+#include <QSplitter>
 #include <QFileInfo>
 #include <QDir>
 #include <QMessageBox>
+#include <QShortcut>
+#include <QTimer>
+#include <KFilePlacesView>
+#include <KFilePlacesModel>
 
 FileChooserDialog::FileChooserDialog(QWidget *parent)
     : QDialog(parent)
 {
     setupUI();
     setWindowTitle(tr("Select File"));
-    resize(900, 600);
+    resize(1200, 750);
 
     // Start in home directory
     setCurrentFolder(QDir::homePath());
+
+    // Focus the pane after dialog is shown
+    QTimer::singleShot(100, this, [this]() {
+        if (m_pane) {
+            m_pane->setFocus();
+        }
+    });
 }
 
 FileChooserDialog::~FileChooserDialog() = default;
@@ -27,32 +39,61 @@ FileChooserDialog::~FileChooserDialog() = default;
 void FileChooserDialog::setupUI()
 {
     auto *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(8, 8, 8, 8);
-    mainLayout->setSpacing(8);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
 
-    // Path label at top
-    m_pathLabel = new QLabel(this);
-    m_pathLabel->setStyleSheet("QLabel { color: #888; padding: 4px; }");
-    mainLayout->addWidget(m_pathLabel);
+    // Splitter for sidebar + pane
+    auto *splitter = new QSplitter(Qt::Horizontal, this);
 
-    // Miller columns view (main area)
-    m_millerView = new MillerView(this);
-    m_millerView->setMinimumHeight(400);
-    mainLayout->addWidget(m_millerView, 1);
+    // Places sidebar (KDE integration)
+    m_placesModel = new KFilePlacesModel(this);
+    m_placesView = new KFilePlacesView(splitter);
+    m_placesView->setModel(m_placesModel);
+    m_placesView->setAutoResizeItemsEnabled(false);
+    m_placesView->setMinimumWidth(150);
+    m_placesView->setMaximumWidth(200);
+
+    // Style the places sidebar
+    m_placesView->setStyleSheet(
+        "KFilePlacesView { background-color: palette(window); border: none; border-right: 1px solid palette(mid); }"
+    );
+
+    splitter->addWidget(m_placesView);
+
+    // Full Pane widget (includes toolbar, nav, miller view, preview)
+    m_pane = new Pane(QUrl::fromLocalFile(QDir::homePath()), splitter);
+    m_pane->setPreviewVisible(true);  // Enable preview by default for file picking
+    splitter->addWidget(m_pane);
+
+    // Set splitter sizes (sidebar smaller)
+    splitter->setSizes({180, 1000});
+    splitter->setStretchFactor(0, 0);  // Sidebar doesn't stretch
+    splitter->setStretchFactor(1, 1);  // Pane stretches
+
+    mainLayout->addWidget(splitter, 1);
 
     // Bottom bar: filename + filter + buttons
-    auto *bottomLayout = new QHBoxLayout;
+    auto *bottomBar = new QWidget(this);
+    bottomBar->setStyleSheet("QWidget { background: palette(window); border-top: 1px solid palette(mid); }");
+    auto *bottomLayout = new QHBoxLayout(bottomBar);
+    bottomLayout->setContentsMargins(12, 8, 12, 8);
     bottomLayout->setSpacing(8);
 
-    // Filename input (for save mode)
+    // Filename label and input (for save mode)
+    m_filenameLabel = new QLabel(tr("Name:"), this);
     m_filenameEdit = new QLineEdit(this);
     m_filenameEdit->setPlaceholderText(tr("Filename"));
     m_filenameEdit->setMinimumWidth(200);
+    bottomLayout->addWidget(m_filenameLabel);
     bottomLayout->addWidget(m_filenameEdit);
+
+    // Hide filename fields by default (shown only in save mode)
+    m_filenameLabel->setVisible(false);
+    m_filenameEdit->setVisible(false);
 
     // Filter dropdown
     m_filterCombo = new QComboBox(this);
-    m_filterCombo->setMinimumWidth(150);
+    m_filterCombo->setMinimumWidth(180);
     m_filterCombo->addItem(tr("All Files (*)"));
     bottomLayout->addWidget(m_filterCombo);
 
@@ -66,27 +107,36 @@ void FileChooserDialog::setupUI()
     bottomLayout->addWidget(m_cancelButton);
     bottomLayout->addWidget(m_acceptButton);
 
-    mainLayout->addLayout(bottomLayout);
+    mainLayout->addWidget(bottomBar);
+
+    // Keyboard shortcuts
+    auto *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    connect(escShortcut, &QShortcut::activated, this, &QDialog::reject);
 
     // Connections
-    connect(m_millerView, &MillerView::selectionChanged,
-            this, &FileChooserDialog::onSelectionChanged);
-    connect(m_millerView, &MillerView::navigatedTo,
-            this, &FileChooserDialog::onNavigatedTo);
-    connect(m_filenameEdit, &QLineEdit::textChanged,
-            this, &FileChooserDialog::updateAcceptButton);
-    connect(m_acceptButton, &QPushButton::clicked,
-            this, &FileChooserDialog::onAccept);
-    connect(m_cancelButton, &QPushButton::clicked,
-            this, &QDialog::reject);
+    connect(m_placesView, &KFilePlacesView::urlChanged, this, &FileChooserDialog::onPlaceActivated);
+    connect(m_pane, &Pane::urlChanged, this, &FileChooserDialog::onNavigatedTo);
+    connect(m_filenameEdit, &QLineEdit::textChanged, this, &FileChooserDialog::updateAcceptButton);
+    connect(m_filenameEdit, &QLineEdit::returnPressed, this, &FileChooserDialog::onAccept);
+    connect(m_acceptButton, &QPushButton::clicked, this, &FileChooserDialog::onAccept);
+    connect(m_cancelButton, &QPushButton::clicked, this, &QDialog::reject);
 
     // Initial state
     updateAcceptButton();
 }
 
+void FileChooserDialog::onPlaceActivated(const QUrl &url)
+{
+    if (m_pane && url.isValid()) {
+        m_pane->setUrl(url);
+        m_currentFolder = url;
+    }
+}
+
 void FileChooserDialog::setSaveMode(bool save)
 {
     m_saveMode = save;
+    m_filenameLabel->setVisible(save);
     m_filenameEdit->setVisible(save);
     m_acceptButton->setText(save ? tr("Save") : tr("Open"));
     updateAcceptButton();
@@ -95,6 +145,7 @@ void FileChooserDialog::setSaveMode(bool save)
 void FileChooserDialog::setDirectoryMode(bool directory)
 {
     m_directoryMode = directory;
+    m_filenameLabel->setVisible(!directory && m_saveMode);
     m_filenameEdit->setVisible(!directory && m_saveMode);
     if (directory) {
         m_acceptButton->setText(tr("Select Folder"));
@@ -105,14 +156,15 @@ void FileChooserDialog::setDirectoryMode(bool directory)
 void FileChooserDialog::setMultipleSelection(bool multiple)
 {
     m_multipleSelection = multiple;
-    // MillerView already supports extended selection
+    // Pane already supports extended selection
 }
 
 void FileChooserDialog::setCurrentFolder(const QString &path)
 {
     m_currentFolder = QUrl::fromLocalFile(path);
-    m_millerView->setRootUrl(m_currentFolder);
-    m_pathLabel->setText(path);
+    if (m_pane) {
+        m_pane->setUrl(m_currentFolder);
+    }
 }
 
 void FileChooserDialog::setCurrentName(const QString &name)
@@ -141,44 +193,19 @@ QString FileChooserDialog::selectedFilter() const
     return m_filterCombo->currentText();
 }
 
-void FileChooserDialog::onSelectionChanged(const QUrl &url)
-{
-    if (!url.isValid() || !url.isLocalFile()) return;
-
-    QFileInfo fi(url.toLocalFile());
-
-    if (!m_directoryMode && fi.isFile()) {
-        // In file mode, update filename field with selected file
-        if (m_saveMode) {
-            m_filenameEdit->setText(fi.fileName());
-        }
-    }
-
-    updateAcceptButton();
-}
-
 void FileChooserDialog::onNavigatedTo(const QUrl &url)
 {
     if (!url.isValid() || !url.isLocalFile()) return;
-
     m_currentFolder = url;
-    m_pathLabel->setText(url.toLocalFile());
 }
 
 void FileChooserDialog::updateAcceptButton()
 {
-    bool enabled = false;
+    bool enabled = true;
 
-    if (m_directoryMode) {
-        // Can always select current folder
-        enabled = m_currentFolder.isValid();
-    } else if (m_saveMode) {
+    if (m_saveMode && !m_directoryMode) {
         // Need filename for save
-        enabled = !m_filenameEdit->text().isEmpty();
-    } else {
-        // Need selection for open
-        QList<QUrl> selected = m_millerView->getSelectedUrls();
-        enabled = !selected.isEmpty();
+        enabled = !m_filenameEdit->text().trimmed().isEmpty();
     }
 
     m_acceptButton->setEnabled(enabled);
@@ -222,21 +249,11 @@ void FileChooserDialog::onAccept()
         QString fullPath = m_currentFolder.toLocalFile() + "/" + filename;
         m_selectedUrls.append(QUrl::fromLocalFile(fullPath));
     } else {
-        // Return selected files from MillerView
-        m_selectedUrls = m_millerView->getSelectedUrls();
+        // Get selection from Pane - use the currently viewed file/folder
+        QUrl currentUrl = m_pane->currentUrl();
 
-        // Filter out directories unless in directory mode
-        if (!m_directoryMode) {
-            QList<QUrl> filesOnly;
-            for (const QUrl &url : m_selectedUrls) {
-                if (url.isLocalFile()) {
-                    QFileInfo fi(url.toLocalFile());
-                    if (fi.isFile()) {
-                        filesOnly.append(url);
-                    }
-                }
-            }
-            m_selectedUrls = filesOnly;
+        if (currentUrl.isValid()) {
+            m_selectedUrls.append(currentUrl);
         }
 
         if (m_selectedUrls.isEmpty()) {

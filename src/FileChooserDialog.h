@@ -4,15 +4,18 @@
 #include <QUrl>
 #include <QStringList>
 
-class MillerView;
+class Pane;
 class QLineEdit;
 class QComboBox;
 class QPushButton;
 class QLabel;
+class KFilePlacesView;
+class KFilePlacesModel;
 
 /**
- * File chooser dialog using Miller columns
- * Used by the FileChooser portal and can be invoked standalone
+ * File chooser dialog using the full Pane widget
+ * Includes places sidebar, preview pane, Quick Look, all view modes
+ * Used by the FileChooser portal
  */
 class FileChooserDialog : public QDialog {
     Q_OBJECT
@@ -34,7 +37,7 @@ public:
     QString selectedFilter() const;
 
 private slots:
-    void onSelectionChanged(const QUrl &url);
+    void onPlaceActivated(const QUrl &url);
     void onNavigatedTo(const QUrl &url);
     void onAccept();
     void updateAcceptButton();
@@ -43,12 +46,19 @@ private:
     void setupUI();
     bool validateSelection();
 
-    MillerView *m_millerView = nullptr;
+    // Sidebar
+    KFilePlacesModel *m_placesModel = nullptr;
+    KFilePlacesView *m_placesView = nullptr;
+
+    // Main pane
+    Pane *m_pane = nullptr;
+
+    // Bottom bar
+    QLabel *m_filenameLabel = nullptr;
     QLineEdit *m_filenameEdit = nullptr;
     QComboBox *m_filterCombo = nullptr;
     QPushButton *m_acceptButton = nullptr;
     QPushButton *m_cancelButton = nullptr;
-    QLabel *m_pathLabel = nullptr;
 
     bool m_saveMode = false;
     bool m_directoryMode = false;
