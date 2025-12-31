@@ -1,0 +1,4 @@
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.kmiller
+Interfaces=org.freedesktop.impl.portal.FileChooser
+UseIn=hyprland;sway;wlroots;KDE;GNOME;X-Generic

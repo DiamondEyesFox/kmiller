@@ -1,66 +1,80 @@
 # KMiller File Manager - Release Notes
 
-## Version 5.3 (Current)
-**Released: September 2025**
+## Version 5.23 (Current)
+**Released: December 2025**
 
 ### Major Features
-✨ **QuickLook Navigation**: Navigate between files using arrow keys or Previous/Next buttons  
-✨ **Smart File Icons**: Intelligent file type and folder icons in preview pane  
-✨ **Open With Dialog**: Right-click any file to open with custom applications  
-✨ **Compress & Extract**: Built-in archive support for ZIP, TAR, 7Z, RAR and more  
-✨ **Duplicate Files**: Easy file and folder duplication with smart naming  
-✨ **Quick Navigation**: Stock locations in Go menu (Desktop, Documents, Downloads, etc.)
+✨ **FileChooser Portal**: kmiller can now be used as the system file picker via xdg-desktop-portal
+✨ **Portal Mode**: Run with `--portal` flag to act as D-Bus FileChooser backend
+✨ **Miller Columns File Picker**: Full Miller columns UI in file dialogs (Open, Save, Save As)
 
-### Bug Fixes
-🐛 Fixed duplicate Help menu buttons  
-🐛 Fixed preferences not being retained between sessions  
-🐛 Improved settings persistence and loading  
-🐛 Enhanced error handling across all operations  
+### Technical Details
+- Implements org.freedesktop.impl.portal.FileChooser D-Bus interface
+- Supports file filters, multiple selection, directory mode
+- Auto-activates via D-Bus when configured as preferred portal
+- New files: FileChooserPortal.cpp/h, FileChooserDialog.cpp/h
+- Portal registration: kmiller.portal, D-Bus service file
 
-### Technical Improvements
-⚡ Better MIME type detection for file categorization  
-⚡ Improved Qt6 theme integration  
-⚡ Enhanced keyboard shortcuts and navigation  
-⚡ Streamlined context menu organization  
+### Installation
+To use kmiller as your system file picker:
+```bash
+# Edit ~/.config/xdg-desktop-portal/portals.conf
+org.freedesktop.impl.portal.FileChooser=kmiller
+
+# Restart portal service
+systemctl --user restart xdg-desktop-portal
+```
 
 ---
 
-## Version 5.2
-**Released: August 2025**
+## Version 5.22
+**Released: December 2025**
 
 ### Features
-- Complete file manager functionality with Miller columns
-- Preview pane with image, PDF, and text support
-- Multi-view modes (Icons, Details, Compact, Miller)
-- Basic file operations (copy, cut, paste, delete, rename)
-- KDE Frameworks integration
-- Thumbnail support and caching
-
-### Known Issues (Fixed in 5.3)
-- Duplicate help menu buttons
-- Settings not retained between sessions
-- Limited file type preview support
+- Properties dialog with permissions editing
+- Settings dialog with theme/view preferences
+- Enhanced QuickLook with navigation
+- Improved context menus
+- Archive compress/extract support
 
 ---
 
-## Version 5.1 and Earlier
-**Development Versions**
+## Version 5.19
+**Released: December 2025**
 
-Early development versions focusing on:
-- Basic Miller column view implementation
-- File system navigation
-- Qt6 and KDE integration
-- Preview functionality foundations
+### Features
+- Multi-tab support
+- Improved drag & drop
+- Status bar with selection info
+- Zoom slider for icon sizes
+
+---
+
+## Version 5.18
+**Released: December 2025**
+
+### Features
+- Complete file manager with Miller columns
+- Preview pane (images, PDF, text)
+- Multi-view modes (Icons, Details, Compact, Miller)
+- Full file operations (copy, cut, paste, delete, rename, duplicate)
+- KDE Frameworks integration
+- Thumbnail caching
+
+---
+
+## Earlier Versions (0.4.x - 0.5.x)
+Development versions establishing core functionality.
 
 ---
 
 ## System Requirements
-- **OS**: Linux (KDE/Qt6 recommended)  
-- **Dependencies**: Qt6, KDE Frameworks, Poppler-Qt6  
-- **Optional**: zip/unzip, tar, 7z, unrar for archive support  
+- **OS**: Linux (KDE/Qt6 recommended)
+- **Dependencies**: Qt6 (Widgets, Multimedia, DBus), KDE Frameworks 6, Poppler-Qt6
+- **Optional**: zip/unzip, tar, 7z, unrar for archive support
 
-## Installation Notes
-KMiller uses a versioned installation system in `/opt/kmiller/versions/` with symlinks for easy version management.
+## Installation
+KMiller uses versioned installation in `/opt/kmiller/versions/` with symlinks for easy rollback.
 
 ---
-*🤖 Generated with [Claude Code](https://claude.ai/code)*
+*Generated with [Claude Code](https://claude.ai/code)*

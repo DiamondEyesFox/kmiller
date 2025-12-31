@@ -34,7 +34,7 @@ set(CMAKE_AUTOUIC ON)
 find_package(ECM REQUIRED NO_MODULE)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets DBus)
 find_package(KF6KIO REQUIRED)               # provides KF6::KIOCore/KIOWidgets/KIOFileWidgets
 find_package(Poppler REQUIRED COMPONENTS Qt6)
 
@@ -55,6 +55,10 @@ add_executable(kmiller
     src/SettingsDialog.h
     src/PropertiesDialog.cpp
     src/PropertiesDialog.h
+    src/FileChooserPortal.cpp
+    src/FileChooserPortal.h
+    src/FileChooserDialog.cpp
+    src/FileChooserDialog.h
 )
 
 target_include_directories(kmiller PRIVATE src)
@@ -63,6 +67,7 @@ target_link_libraries(kmiller
     Qt6::Widgets
     Qt6::Multimedia
     Qt6::MultimediaWidgets
+    Qt6::DBus
     KF6::KIOCore
     KF6::KIOWidgets
     KF6::KIOFileWidgets
@@ -105,6 +110,15 @@ install(FILES ${CMAKE_SOURCE_DIR}/CMakeLists.txt
 install(FILES ${CMAKE_SOURCE_DIR}/PATCHNOTES.md
         DESTINATION /opt/kmiller
         RENAME PATCHNOTES-latest.md)
+
+# ===== FileChooser Portal files =====
+# Portal registration
+install(FILES ${CMAKE_SOURCE_DIR}/data/kmiller.portal
+        DESTINATION /usr/share/xdg-desktop-portal/portals)
+
+# D-Bus service for portal auto-activation
+install(FILES ${CMAKE_SOURCE_DIR}/data/org.freedesktop.impl.portal.desktop.kmiller.service
+        DESTINATION /usr/share/dbus-1/services)
 
 # Provide version string to the code as KMILLER_VERSION_STR
 if(NOT DEFINED PROJECT_VERSION)
