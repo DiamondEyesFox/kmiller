@@ -1,5 +1,6 @@
 #pragma once
 #include <QMainWindow>
+#include <QList>
 class QAction;
 class QMenu;
 class QStatusBar;
@@ -71,6 +72,7 @@ private:
 
     void addInitialTab(const QUrl &url);
     Pane* currentPane() const;
+    QList<Pane*> allPanes() const;
     void buildMenus();
     void loadSettings();
     void saveSettings();

@@ -4,6 +4,11 @@
 class QStackedWidget;
 class QLabel;
 class QShortcut;
+class QMediaPlayer;
+class QAudioOutput;
+class QVideoWidget;
+class QPushButton;
+class QSlider;
 class Pane;
 
 class QuickLookDialog : public QDialog {
@@ -15,18 +20,30 @@ public:
 private slots:
     void navigateNext();
     void navigatePrevious();
+    void toggleMediaPlayback();
 
 private:
     void showImage(const QString &path);
     void showPdf(const QString &path);
-    void showText(const QString &path);
+    bool showText(const QString &path);
+    void showMedia(const QString &path, bool isVideo);
+    void stopMedia();
+    void showUnsupported(const QString &path, const QString &mime);
 
     Pane *pane = nullptr;
     QString currentFilePath;
     QStackedWidget *stack = nullptr;
     QLabel *filenameLabel = nullptr;
+    QLabel *unsupportedLabel = nullptr;
     QShortcut *escShortcut = nullptr;
     QShortcut *spaceShortcut = nullptr;
     QShortcut *upShortcut = nullptr;
     QShortcut *downShortcut = nullptr;
+
+    QMediaPlayer *mediaPlayer = nullptr;
+    QAudioOutput *audioOutput = nullptr;
+    QVideoWidget *videoWidget = nullptr;
+    QLabel *mediaInfoLabel = nullptr;
+    QPushButton *mediaPlayPauseButton = nullptr;
+    QSlider *mediaSeekSlider = nullptr;
 };

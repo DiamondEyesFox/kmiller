@@ -1,4 +1,5 @@
 #include "MillerView.h"
+#include "FileOpsService.h"
 #include <memory>
 #include <QFileSystemModel>
 #include <QFileInfo>
@@ -7,7 +8,6 @@
 #include <QPointer>
 #include <QTimer>
 #include <QListView>
-#include <KIO/OpenUrlJob>
 
 MillerView::MillerView(QWidget *parent) : QWidget(parent) {
     layout = new QHBoxLayout(this);
@@ -39,7 +39,8 @@ void MillerView::pruneColumnsAfter(QListView *view) {
 void MillerView::addColumn(const QUrl &url) {
     emit navigatedTo(url);
 
-    auto *model = new QFileSystemModel(this);
+    auto *view = new QListView(this);
+    auto *model = new QFileSystemModel(view);
     const QString rootPath = url.toLocalFile();
     model->setRootPath(rootPath);
     model->setReadOnly(false);  // Enable drag & drop modifications
@@ -51,7 +52,6 @@ void MillerView::addColumn(const QUrl &url) {
     }
     model->setFilter(filters);
 
-    auto *view = new QListView(this);
     view->setModel(model);
     view->setRootIndex(model->index(rootPath));
     view->setSelectionMode(QAbstractItemView::ExtendedSelection); // allow multi
@@ -84,6 +84,20 @@ void MillerView::addColumn(const QUrl &url) {
         "  background-color: #505050; "
         "  color: palette(highlighted-text); "
         "}"
+        "QScrollBar:vertical { "
+        "  background-color: transparent; width: 12px; border-radius: 6px; "
+        "}"
+        "QScrollBar::handle:vertical { "
+        "  background-color: palette(mid); border-radius: 6px; min-height: 20px; margin: 2px; "
+        "}"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        "QScrollBar:horizontal { "
+        "  background-color: transparent; height: 12px; border-radius: 6px; "
+        "}"
+        "QScrollBar::handle:horizontal { "
+        "  background-color: palette(mid); border-radius: 6px; min-width: 20px; margin: 2px; "
+        "}"
+        "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
     );
 
     // Context menu
@@ -95,6 +109,13 @@ void MillerView::addColumn(const QUrl &url) {
 
         QModelIndex idx = view->indexAt(pos);
         if (idx.isValid()) {
+            // Finder-like behavior: right-clicking an unselected item switches selection to it.
+            if (QItemSelectionModel *sel = view->selectionModel();
+                sel && !sel->isSelected(idx)) {
+                sel->select(idx, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                view->setCurrentIndex(idx);
+            }
+
             // Collect all selected URLs from this column
             QList<QUrl> selectedUrls;
             QItemSelectionModel *sel = view->selectionModel();
@@ -133,8 +154,7 @@ void MillerView::addColumn(const QUrl &url) {
         if (fi.isDir()) {
             addColumn(QUrl::fromLocalFile(p));
         } else {
-            auto *job = new KIO::OpenUrlJob(QUrl::fromLocalFile(p));
-            job->start();
+            FileOpsService::openUrl(QUrl::fromLocalFile(p), this);
         }
     };
 
@@ -257,8 +277,7 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
         if (fi.isDir()) {
             addColumn(QUrl::fromLocalFile(p));
         } else {
-            auto *job = new KIO::OpenUrlJob(QUrl::fromLocalFile(p));
-            job->start();
+            FileOpsService::openUrl(QUrl::fromLocalFile(p), this);
         }
         return true;
     }

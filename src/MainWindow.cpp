@@ -28,6 +28,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QVBoxLayout>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
@@ -48,6 +49,46 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     tabs->setTabsClosable(true);
     tabs->setDocumentMode(true);
     v->addWidget(tabs);
+
+    // Tab bar context menu (supports right-click on empty tab strip area).
+    tabs->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tabs->tabBar(), &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QTabBar *bar = tabs->tabBar();
+        const int tabIndex = bar->tabAt(pos);
+
+        QMenu menu(this);
+        QAction *newTabAction = menu.addAction("New Tab");
+        QAction *closeTabAction = nullptr;
+        QAction *closeOtherTabsAction = nullptr;
+
+        if (tabIndex >= 0) {
+            closeTabAction = menu.addAction("Close Tab");
+            closeOtherTabsAction = menu.addAction("Close Other Tabs");
+        }
+
+        QAction *chosen = menu.exec(bar->mapToGlobal(pos));
+        if (!chosen) return;
+
+        if (chosen == newTabAction) {
+            newTab();
+            return;
+        }
+        if (tabIndex >= 0 && chosen == closeTabAction) {
+            tabs->setCurrentIndex(tabIndex);
+            closeCurrentTab();
+            return;
+        }
+        if (tabIndex >= 0 && chosen == closeOtherTabsAction) {
+            QWidget *keep = tabs->widget(tabIndex);
+            for (int i = tabs->count() - 1; i >= 0; --i) {
+                QWidget *w = tabs->widget(i);
+                if (w == keep) continue;
+                tabs->removeTab(i);
+                delete w;
+            }
+            tabs->setCurrentWidget(keep);
+        }
+    });
 
     connect(tabs, &QTabWidget::tabCloseRequested, this, [this](int idx){
         QWidget *w = tabs->widget(idx);
@@ -107,9 +148,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     
     // Connect zoom slider to current pane
     connect(globalZoomSlider, &QSlider::valueChanged, this, [this](int value) {
-        if (auto *p = currentPane()) {
+        for (Pane *p : allPanes()) {
             p->setZoomValue(value);
         }
+        saveSettings();
     });
     
     addInitialTab(QUrl::fromLocalFile("/"));
@@ -191,7 +233,10 @@ void MainWindow::buildMenus() {
     actShowHidden->setChecked(false);
     actShowHidden->setShortcut(QKeySequence("Ctrl+Shift+H"));
     connect(actShowHidden, &QAction::toggled, this, [this](bool on){
-        if (auto *p = currentPane()) p->setShowHiddenFiles(on);
+        for (Pane *p : allPanes()) {
+            p->setShowHiddenFiles(on);
+        }
+        saveSettings();
     });
 
     view->addSeparator();
@@ -199,7 +244,10 @@ void MainWindow::buildMenus() {
     actPreviewPane->setCheckable(true);
     actPreviewPane->setChecked(false);
     connect(actPreviewPane, &QAction::toggled, this, [this](bool on){
-        if (auto *p = currentPane()) p->setPreviewVisible(on);
+        for (Pane *p : allPanes()) {
+            p->setPreviewVisible(on);
+        }
+        saveSettings();
     });
 
     view->addSeparator();
@@ -276,9 +324,23 @@ void MainWindow::addInitialTab(const QUrl &url) {
             tabs->setTabText(tabIdx, name);
         }
     });
+
+    // Apply current runtime settings to newly created panes.
+    QSettings settings;
+    p->setShowHiddenFiles(actShowHidden->isChecked());
+    p->setPreviewVisible(actPreviewPane->isChecked());
+    p->setViewMode(settings.value("general/defaultView", 3).toInt());
+    p->setZoomValue(globalZoomSlider->value());
 }
 
-void MainWindow::newTab() { addInitialTab(QUrl::fromLocalFile("/")); }
+void MainWindow::newTab() {
+    QUrl target = QUrl::fromLocalFile("/");
+    if (auto *p = currentPane()) {
+        const QUrl current = p->currentUrl();
+        if (current.isValid()) target = current;
+    }
+    addInitialTab(target);
+}
 
 void MainWindow::closeCurrentTab() {
     int idx = tabs->currentIndex();
@@ -291,7 +353,10 @@ void MainWindow::closeCurrentTab() {
 }
 
 void MainWindow::placeActivated(const QUrl &url) { if (auto *p = currentPane()) p->setUrl(url); }
-void MainWindow::toggleToolbar(bool on) { tb->setVisible(on); }
+void MainWindow::toggleToolbar(bool on) {
+    tb->setVisible(on);
+    saveSettings();
+}
 void MainWindow::openPreferences() { 
     SettingsDialog dlg(this); 
     connect(&dlg, &SettingsDialog::settingsApplied, this, &MainWindow::loadSettings);
@@ -299,10 +364,10 @@ void MainWindow::openPreferences() {
         loadSettings(); // Reload settings to sync UI
     }
 }
-void MainWindow::setViewIcons(){ if (auto p=currentPane()) p->setViewMode(0); }
-void MainWindow::setViewDetails(){ if (auto p=currentPane()) p->setViewMode(1); }
-void MainWindow::setViewCompact(){ if (auto p=currentPane()) p->setViewMode(2); }
-void MainWindow::setViewMiller(){ if (auto p=currentPane()) p->setViewMode(3); }
+void MainWindow::setViewIcons(){ if (auto p=currentPane()) { p->setViewMode(0); saveSettings(); } }
+void MainWindow::setViewDetails(){ if (auto p=currentPane()) { p->setViewMode(1); saveSettings(); } }
+void MainWindow::setViewCompact(){ if (auto p=currentPane()) { p->setViewMode(2); saveSettings(); } }
+void MainWindow::setViewMiller(){ if (auto p=currentPane()) { p->setViewMode(3); saveSettings(); } }
 
 int MainWindow::getCurrentViewMode() const {
     if (auto *p = currentPane()) {
@@ -315,6 +380,19 @@ void MainWindow::quickLook(){ if (auto p=currentPane()) p->quickLookSelected();
 
 Pane* MainWindow::currentPane() const {
     return qobject_cast<Pane*>(tabs->currentWidget());
+}
+
+QList<Pane*> MainWindow::allPanes() const {
+    QList<Pane*> panes;
+    if (!tabs) return panes;
+
+    panes.reserve(tabs->count());
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (auto *pane = qobject_cast<Pane*>(tabs->widget(i))) {
+            panes.push_back(pane);
+        }
+    }
+    return panes;
 }
 
 static QString formatSize(qint64 size) {
@@ -366,21 +444,25 @@ void MainWindow::loadSettings() {
     // Load hidden files setting
     bool showHidden = settings.value("general/showHiddenFiles", false).toBool();
     actShowHidden->setChecked(showHidden);
-    if (auto *p = currentPane()) {
-        p->setShowHiddenFiles(showHidden);
-    }
     
     // Load preview pane setting (default ON for Finder-like behavior)
     bool showPreview = settings.value("general/showPreviewPane", true).toBool();
     actPreviewPane->setChecked(showPreview);
-    if (auto *p = currentPane()) {
-        p->setPreviewVisible(showPreview);
-    }
     
     // Load default view mode
     int defaultView = settings.value("general/defaultView", 3).toInt();  // Miller Columns by default
-    if (auto *p = currentPane()) {
+    
+    // Load icon size used by status bar zoom slider and pane icon scaling.
+    int iconSize = settings.value("view/iconSize", 64).toInt();
+    globalZoomSlider->blockSignals(true);
+    globalZoomSlider->setValue(iconSize);
+    globalZoomSlider->blockSignals(false);
+
+    for (Pane *p : allPanes()) {
+        p->setShowHiddenFiles(showHidden);
+        p->setPreviewVisible(showPreview);
         p->setViewMode(defaultView);
+        p->setZoomValue(iconSize);
     }
     
     // Load and apply theme
@@ -401,6 +483,7 @@ void MainWindow::saveSettings() {
     settings.setValue("general/showHiddenFiles", actShowHidden->isChecked());
     settings.setValue("general/showPreviewPane", actPreviewPane->isChecked());
     settings.setValue("general/theme", currentTheme);
+    settings.setValue("view/iconSize", globalZoomSlider->value());
     
     // Save current view mode from active pane
     if (auto *p = currentPane()) {
@@ -413,7 +496,8 @@ void MainWindow::saveSettings() {
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
-    // Settings are now saved immediately when changed, no need to save on close
+    // Persist window-driven settings one more time as a safety net.
+    saveSettings();
     QMainWindow::closeEvent(event);
 }
 
@@ -447,17 +531,31 @@ void MainWindow::applyTheme(int theme) {
                 "KUrlNavigator { background-color: #3c3c3c; color: #ffffff; }"
                 "KUrlNavigator QToolButton { color: #ffffff; }"
                 "KUrlNavigator QLineEdit { background-color: #3c3c3c; color: #ffffff; }"
-                "QScrollBar:vertical { "
+                "QScrollBar:vertical, QAbstractScrollArea QScrollBar:vertical { "
                     "background-color: transparent; width: 12px; "
                     "border-radius: 6px; "
                 "}"
-                "QScrollBar::handle:vertical { "
+                "QScrollBar::handle:vertical, QAbstractScrollArea QScrollBar::handle:vertical { "
                     "background-color: #555555; border-radius: 6px; "
                     "min-height: 20px; margin: 2px; "
                 "}"
-                "QScrollBar::handle:vertical:hover { background-color: #707070; }"
-                "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { "
+                "QScrollBar::handle:vertical:hover, QAbstractScrollArea QScrollBar::handle:vertical:hover { background-color: #707070; }"
+                "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, "
+                "QAbstractScrollArea QScrollBar::add-line:vertical, QAbstractScrollArea QScrollBar::sub-line:vertical { "
                     "height: 0px; "
+                "}"
+                "QScrollBar:horizontal, QAbstractScrollArea QScrollBar:horizontal { "
+                    "background-color: transparent; height: 12px; "
+                    "border-radius: 6px; "
+                "}"
+                "QScrollBar::handle:horizontal, QAbstractScrollArea QScrollBar::handle:horizontal { "
+                    "background-color: #555555; border-radius: 6px; "
+                    "min-width: 20px; margin: 2px; "
+                "}"
+                "QScrollBar::handle:horizontal:hover, QAbstractScrollArea QScrollBar::handle:horizontal:hover { background-color: #707070; }"
+                "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal, "
+                "QAbstractScrollArea QScrollBar::add-line:horizontal, QAbstractScrollArea QScrollBar::sub-line:horizontal { "
+                    "width: 0px; "
                 "}";
             setStyleSheet(styleSheet);
             break;
@@ -534,17 +632,31 @@ void MainWindow::applyTheme(int theme) {
                 "QTabBar::tab:selected { background-color: #ffffff; border-bottom: none; color: #000000; }"
                 "QTabBar::tab:hover:!selected { background-color: #e8e8e8; }"
                 "QSplitter::handle { background-color: #d1d1d1; width: 1px; }"
-                "QScrollBar:vertical { "
+                "QScrollBar:vertical, QAbstractScrollArea QScrollBar:vertical { "
                     "background-color: transparent; width: 12px; "
                     "border-radius: 6px; "
                 "}"
-                "QScrollBar::handle:vertical { "
+                "QScrollBar::handle:vertical, QAbstractScrollArea QScrollBar::handle:vertical { "
                     "background-color: #c1c1c1; border-radius: 6px; "
                     "min-height: 20px; margin: 2px; "
                 "}"
-                "QScrollBar::handle:vertical:hover { background-color: #a1a1a1; }"
-                "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { "
+                "QScrollBar::handle:vertical:hover, QAbstractScrollArea QScrollBar::handle:vertical:hover { background-color: #a1a1a1; }"
+                "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, "
+                "QAbstractScrollArea QScrollBar::add-line:vertical, QAbstractScrollArea QScrollBar::sub-line:vertical { "
                     "height: 0px; "
+                "}"
+                "QScrollBar:horizontal, QAbstractScrollArea QScrollBar:horizontal { "
+                    "background-color: transparent; height: 12px; "
+                    "border-radius: 6px; "
+                "}"
+                "QScrollBar::handle:horizontal, QAbstractScrollArea QScrollBar::handle:horizontal { "
+                    "background-color: #c1c1c1; border-radius: 6px; "
+                    "min-width: 20px; margin: 2px; "
+                "}"
+                "QScrollBar::handle:horizontal:hover, QAbstractScrollArea QScrollBar::handle:horizontal:hover { background-color: #a1a1a1; }"
+                "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal, "
+                "QAbstractScrollArea QScrollBar::add-line:horizontal, QAbstractScrollArea QScrollBar::sub-line:horizontal { "
+                    "width: 0px; "
                 "}";
             setStyleSheet(styleSheet);
             break;

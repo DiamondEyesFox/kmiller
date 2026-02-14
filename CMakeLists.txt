@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # ===== Version detection =====
-# Priority: -DKMILLER_VERSION=...  ->  $KMILLER_VERSION  ->  git describe  ->  0.0.0-dev
+# Priority: -DKMILLER_VERSION=...  ->  $KMILLER_VERSION  ->  git describe  ->  release fallback
 set(_VER "")
 if(DEFINED KMILLER_VERSION AND NOT "${KMILLER_VERSION}" STREQUAL "")
   set(_VER "${KMILLER_VERSION}")
@@ -17,9 +17,19 @@ else()
   if(_GITVER)
     set(_VER "${_GITVER}")
   else()
-    set(_VER "0.4.3")  # fallback default; change if you want
+    set(_VER "5.25.1")  # release fallback
   endif()
 endif()
+
+# Normalize git/tag strings like "v5.25-3-g<hash>" into semver "5.25".
+string(REGEX REPLACE "^v" "" _VER "${_VER}")
+string(REGEX MATCH "^[0-9]+(\\.[0-9]+){0,2}" _VER_SEMVER "${_VER}")
+if(_VER_SEMVER)
+  set(_VER "${_VER_SEMVER}")
+else()
+  set(_VER "5.25.1")
+endif()
+
 project(KMiller VERSION ${_VER} LANGUAGES CXX)
 message(STATUS "KMiller version: ${PROJECT_VERSION}")
 
@@ -51,6 +61,8 @@ add_executable(kmiller
     src/QuickLookDialog.h
     src/ThumbCache.cpp
     src/ThumbCache.h
+    src/FileOpsService.cpp
+    src/FileOpsService.h
     src/SettingsDialog.cpp
     src/SettingsDialog.h
     src/PropertiesDialog.cpp
@@ -106,22 +118,43 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/src
 install(FILES ${CMAKE_SOURCE_DIR}/CMakeLists.txt
         DESTINATION ${KMILLER_VERSIONS_DIR})
 
-# Install patch notes
-install(FILES ${CMAKE_SOURCE_DIR}/PATCHNOTES.md
-        DESTINATION /opt/kmiller
-        RENAME PATCHNOTES-latest.md)
+# Install patch notes when present
+if(EXISTS ${CMAKE_SOURCE_DIR}/PATCHNOTES.md)
+  install(FILES ${CMAKE_SOURCE_DIR}/PATCHNOTES.md
+          DESTINATION /opt/kmiller
+          RENAME PATCHNOTES-latest.md)
+else()
+  message(WARNING "PATCHNOTES.md not found; skipping patch note installation")
+endif()
 
 # ===== FileChooser Portal files =====
 # Portal registration
-install(FILES ${CMAKE_SOURCE_DIR}/data/kmiller.portal
-        DESTINATION /usr/share/xdg-desktop-portal/portals)
+if(EXISTS ${CMAKE_SOURCE_DIR}/data/kmiller.portal)
+  install(FILES ${CMAKE_SOURCE_DIR}/data/kmiller.portal
+          DESTINATION /usr/share/xdg-desktop-portal/portals)
+else()
+  message(WARNING "data/kmiller.portal not found; skipping portal file installation")
+endif()
 
 # D-Bus service for portal auto-activation
-install(FILES ${CMAKE_SOURCE_DIR}/data/org.freedesktop.impl.portal.desktop.kmiller.service
-        DESTINATION /usr/share/dbus-1/services)
+if(EXISTS ${CMAKE_SOURCE_DIR}/data/org.freedesktop.impl.portal.desktop.kmiller.service)
+  install(FILES ${CMAKE_SOURCE_DIR}/data/org.freedesktop.impl.portal.desktop.kmiller.service
+          DESTINATION /usr/share/dbus-1/services)
+else()
+  message(WARNING "portal D-Bus service file not found; skipping service installation")
+endif()
 
 # Provide version string to the code as KMILLER_VERSION_STR
 if(NOT DEFINED PROJECT_VERSION)
   set(PROJECT_VERSION "${KMILLER_VERSION}")
 endif()
 target_compile_definitions(kmiller PRIVATE KMILLER_VERSION_STR="${PROJECT_VERSION}")
+
+option(KMILLER_ENABLE_TESTS "Enable lightweight smoke tests" ON)
+if(KMILLER_ENABLE_TESTS)
+  enable_testing()
+  add_test(
+    NAME kmiller_linkage_smoke
+    COMMAND ${CMAKE_SOURCE_DIR}/tests/smoke/ldd_no_missing.sh $<TARGET_FILE:kmiller>
+  )
+endif()

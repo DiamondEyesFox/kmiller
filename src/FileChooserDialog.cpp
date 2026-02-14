@@ -10,7 +10,9 @@
 #include <QSplitter>
 #include <QFileInfo>
 #include <QDir>
+#include <QMimeDatabase>
 #include <QMessageBox>
+#include <QRegularExpression>
 #include <QShortcut>
 #include <QTimer>
 #include <KFilePlacesView>
@@ -36,6 +38,56 @@ FileChooserDialog::FileChooserDialog(QWidget *parent)
 
 FileChooserDialog::~FileChooserDialog() = default;
 
+static QStringList filterPatternsFromText(const QString &filterText)
+{
+    int start = filterText.indexOf('(');
+    int end = filterText.lastIndexOf(')');
+    QString patternsText = (start >= 0 && end > start) ? filterText.mid(start + 1, end - start - 1)
+                                                       : filterText;
+
+    QStringList patterns = patternsText.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+    if (patterns.isEmpty()) {
+        patterns << "*";
+    }
+    return patterns;
+}
+
+static bool looksLikeMimePattern(const QString &pattern)
+{
+    return pattern.contains('/')
+        && !pattern.contains('*')
+        && !pattern.contains('?')
+        && !pattern.contains('[');
+}
+
+static bool matchesFilterPattern(const QString &filePath, const QString &fileName, const QStringList &patterns)
+{
+    const QMimeDatabase mimeDb;
+    const QMimeType fileMime = mimeDb.mimeTypeForFile(filePath, QMimeDatabase::MatchExtension);
+
+    for (const QString &pattern : patterns) {
+        if (pattern == "*" || pattern == "*.*") {
+            return true;
+        }
+
+        if (looksLikeMimePattern(pattern)) {
+            if (fileMime.isValid() && (fileMime.name() == pattern || fileMime.inherits(pattern))) {
+                return true;
+            }
+            continue;
+        }
+
+        const QRegularExpression rx(
+            QRegularExpression::wildcardToRegularExpression(pattern),
+            QRegularExpression::CaseInsensitiveOption
+        );
+        if (rx.match(fileName).hasMatch()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void FileChooserDialog::setupUI()
 {
     auto *mainLayout = new QVBoxLayout(this);
@@ -56,6 +108,12 @@ void FileChooserDialog::setupUI()
     // Style the places sidebar
     m_placesView->setStyleSheet(
         "KFilePlacesView { background-color: palette(window); border: none; border-right: 1px solid palette(mid); }"
+        "QScrollBar:vertical { background-color: transparent; width: 12px; border-radius: 6px; }"
+        "QScrollBar::handle:vertical { background-color: palette(mid); border-radius: 6px; min-height: 20px; margin: 2px; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        "QScrollBar:horizontal { background-color: transparent; height: 12px; border-radius: 6px; }"
+        "QScrollBar::handle:horizontal { background-color: palette(mid); border-radius: 6px; min-width: 20px; margin: 2px; }"
+        "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
     );
 
     splitter->addWidget(m_placesView);
@@ -249,11 +307,35 @@ void FileChooserDialog::onAccept()
         QString fullPath = m_currentFolder.toLocalFile() + "/" + filename;
         m_selectedUrls.append(QUrl::fromLocalFile(fullPath));
     } else {
-        // Get actual file selection from Pane
-        m_selectedUrls = m_pane->getSelectedUrls();
+        // Open mode: return explicitly selected item(s), not just the current folder.
+        m_selectedUrls = m_pane ? m_pane->selectedUrls() : QList<QUrl>();
+
+        if (!m_multipleSelection && m_selectedUrls.size() > 1) {
+            m_selectedUrls = {m_selectedUrls.first()};
+        }
+
+        const QStringList patterns = filterPatternsFromText(m_filterCombo->currentText());
+        QList<QUrl> filteredUrls;
+        filteredUrls.reserve(m_selectedUrls.size());
+        for (const QUrl &url : m_selectedUrls) {
+            if (!url.isLocalFile()) {
+                filteredUrls.append(url);
+                continue;
+            }
+
+            QFileInfo fi(url.toLocalFile());
+            if (fi.isDir() || matchesFilterPattern(fi.filePath(), fi.fileName(), patterns)) {
+                filteredUrls.append(url);
+            }
+        }
+        m_selectedUrls = filteredUrls;
 
         if (m_selectedUrls.isEmpty()) {
-            QMessageBox::warning(this, tr("Error"), tr("Please select a file."));
+            QMessageBox::warning(
+                this,
+                tr("Error"),
+                tr("Please select a file that matches the active filter: %1").arg(m_filterCombo->currentText())
+            );
             return;
         }
     }

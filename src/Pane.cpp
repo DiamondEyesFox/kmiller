@@ -4,6 +4,7 @@
 #include "QuickLookDialog.h"
 #include "ThumbCache.h"
 #include "PropertiesDialog.h"
+#include "FileOpsService.h"
 
 // Qt Core
 #include <QDir>
@@ -56,9 +57,6 @@
 #include <KDirSortFilterProxyModel>
 #include <KFileItem>
 #include <KIO/ApplicationLauncherJob>
-#include <KIO/CopyJob>
-#include <KIO/DeleteJob>
-#include <KIO/OpenUrlJob>
 #include <KService>
 #include <KUrlNavigator>
 
@@ -152,6 +150,32 @@ static QString getThumbnailPath(const QUrl &url) {
     QString urlStr = url.toString();
     QString hash = QString(QCryptographicHash::hash(urlStr.toUtf8(), QCryptographicHash::Md5).toHex());
     return dir.absoluteFilePath(hash + ".png");
+}
+
+static bool confirmDeleteAction(QWidget *parent, const QList<QUrl> &urls, bool permanent) {
+    if (urls.isEmpty()) return false;
+
+    QString message;
+    if (urls.size() == 1) {
+        QFileInfo fi(urls.first().toLocalFile());
+        const QString name = fi.fileName().isEmpty() ? urls.first().toString() : fi.fileName();
+        if (permanent) {
+            message = QString("Are you sure you want to PERMANENTLY delete \"%1\"?\n\nThis cannot be undone.").arg(name);
+        } else {
+            message = QString("Are you sure you want to move \"%1\" to Trash?").arg(name);
+        }
+    } else {
+        if (permanent) {
+            message = QString("Are you sure you want to PERMANENTLY delete %1 items?\n\nThis cannot be undone.").arg(urls.size());
+        } else {
+            message = QString("Are you sure you want to move %1 items to Trash?").arg(urls.size());
+        }
+    }
+
+    const QString title = permanent ? "Confirm Permanent Delete" : "Confirm Move to Trash";
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        parent, title, message, QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    return reply == QMessageBox::Yes;
 }
 
 
@@ -347,6 +371,12 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
         connect(v, &QWidget::customContextMenuRequested, this, [this, v](const QPoint &pos){
             QModelIndex index = v->indexAt(pos);
             if (index.isValid()) {
+                // Finder-like behavior: right-click an unselected item to act on that item.
+                if (QItemSelectionModel *sel = v->selectionModel();
+                    sel && !sel->isSelected(index)) {
+                    sel->select(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                    v->setCurrentIndex(index);
+                }
                 showContextMenu(v->viewport()->mapToGlobal(pos));
             } else {
                 showEmptySpaceContextMenu(pos);
@@ -473,8 +503,7 @@ void Pane::onActivated(const QModelIndex &idx) {
     if (item.isDir()) {
         setRoot(url);
     } else {
-        auto *job = new KIO::OpenUrlJob(url);
-        job->start();
+        FileOpsService::openUrl(url, this);
     }
     // Update preview to match activation as well (helps when toggled on)
     if (m_previewVisible) updatePreviewForUrl(url);
@@ -619,17 +648,6 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     const QUrl firstUrl = selectedUrls.first();
     const QFileInfo firstFi(firstUrl.toLocalFile());
 
-    // Check if all selected items are archives (for Extract option)
-    bool allArchives = true;
-    bool anyArchive = false;
-    for (const QUrl &url : selectedUrls) {
-        if (isArchiveFile(url.toLocalFile())) {
-            anyArchive = true;
-        } else {
-            allArchives = false;
-        }
-    }
-
     QMenu menu;
 
     // --- Open actions ---
@@ -734,8 +752,7 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     // Handle actions
     if (chosen == actOpen) {
         for (const QUrl &url : selectedUrls) {
-            auto *job = new KIO::OpenUrlJob(url);
-            job->start();
+            FileOpsService::openUrl(url, this);
         }
         return;
     }
@@ -773,7 +790,7 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         return;
     }
     if (chosen == actDelete) {
-        deleteSelected();
+        deleteSelectedPermanently();
         return;
     }
     if (chosen == actCompress) {
@@ -860,7 +877,9 @@ void Pane::showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder
     // Add basic folder operations
     QAction *newFolderAction = menu.addAction("New Folder");
     newFolderAction->setShortcut(QKeySequence("Ctrl+Shift+N"));
-    connect(newFolderAction, &QAction::triggered, this, &Pane::createNewFolder);
+    connect(newFolderAction, &QAction::triggered, this, [this, pasteDestination]() {
+        createNewFolderIn(pasteDestination);
+    });
 
     menu.addSeparator();
 
@@ -896,6 +915,19 @@ void Pane::showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder
 }
 
 // ---- File Operations Implementation ----
+
+QList<QUrl> Pane::selectedUrls() const {
+    QList<QUrl> urls = getSelectedUrls();
+    if (!urls.isEmpty()) return urls;
+
+    // Fallback to current item for non-Miller views.
+    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+    if (v) {
+        QUrl current = urlForIndex(v->currentIndex());
+        if (current.isValid()) urls.append(current);
+    }
+    return urls;
+}
 
 QList<QUrl> Pane::getSelectedUrls() const {
     QList<QUrl> urls;
@@ -990,11 +1022,11 @@ void Pane::pasteFilesToDestination(const QUrl &destination) {
     }
 
     if (isCut) {
-        KIO::move(urls, destination);
+        FileOpsService::move(urls, destination, this);
         // Clear clipboard after move to prevent re-moving
         QGuiApplication::clipboard()->clear();
     } else {
-        KIO::copy(urls, destination);
+        FileOpsService::copy(urls, destination, this);
     }
 }
 
@@ -1018,35 +1050,43 @@ bool Pane::isClipboardCutOperation() const {
 }
 
 void Pane::deleteSelected() {
-    const auto urls = getSelectedUrls();
+    const auto urls = selectedUrls();
     if (urls.isEmpty()) return;
 
-    // Confirmation dialog for permanent delete
-    QString message;
-    if (urls.size() == 1) {
-        QFileInfo fi(urls.first().toLocalFile());
-        message = QString("Are you sure you want to PERMANENTLY delete \"%1\"?\n\nThis cannot be undone.").arg(fi.fileName());
-    } else {
-        message = QString("Are you sure you want to PERMANENTLY delete %1 items?\n\nThis cannot be undone.").arg(urls.size());
+    QSettings settings;
+    const bool moveToTrashByDefault = settings.value("advanced/moveToTrash", true).toBool();
+    const bool confirmDelete = settings.value("advanced/confirmDelete", true).toBool();
+
+    if (moveToTrashByDefault) {
+        if (confirmDelete && !confirmDeleteAction(this, urls, false)) return;
+        FileOpsService::trash(urls, this);
+        return;
     }
 
-    QMessageBox::StandardButton reply = QMessageBox::question(
-        this, "Confirm Permanent Delete", message,
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    deleteSelectedPermanently();
+}
 
-    if (reply != QMessageBox::Yes) return;
+void Pane::deleteSelectedPermanently() {
+    const auto urls = selectedUrls();
+    if (urls.isEmpty()) return;
 
-    auto *job = KIO::del(urls);
-    Q_UNUSED(job);  // Job is auto-managed by KIO
+    QSettings settings;
+    const bool confirmDelete = settings.value("advanced/confirmDelete", true).toBool();
+    if (confirmDelete && !confirmDeleteAction(this, urls, true)) return;
+
+    FileOpsService::del(urls, this);
 }
 
 void Pane::moveToTrash() {
-    const auto urls = getSelectedUrls();
+    const auto urls = selectedUrls();
     if (urls.isEmpty()) return;
 
+    QSettings settings;
+    const bool confirmDelete = settings.value("advanced/confirmDelete", true).toBool();
+    if (confirmDelete && !confirmDeleteAction(this, urls, false)) return;
+
     // Use KIO::trash for safe deletion (moves to trash)
-    auto *job = KIO::trash(urls);
-    Q_UNUSED(job);  // Job is auto-managed by KIO
+    FileOpsService::trash(urls, this);
 }
 
 void Pane::renameSelected() {
@@ -1073,51 +1113,64 @@ void Pane::renameSelected() {
 }
 
 void Pane::createNewFolder() {
+    createNewFolderIn(currentRoot);
+}
+
+void Pane::createNewFolderIn(const QUrl &targetFolder) {
+    QUrl destinationUrl = targetFolder;
+    if (!destinationUrl.isValid() || !destinationUrl.isLocalFile()) {
+        destinationUrl = currentRoot;
+    }
+
+    if (!destinationUrl.isValid() || !destinationUrl.isLocalFile()) {
+        return;
+    }
+
+    const QString destinationPath = destinationUrl.toLocalFile();
+
     // Create a uniquely named new folder
     QString baseName = "New Folder";
     QString folderName = baseName;
     int counter = 1;
     
-    QDir currentDir(currentRoot.toLocalFile());
+    QDir currentDir(destinationPath);
     while (currentDir.exists(folderName)) {
         folderName = QString("%1 %2").arg(baseName).arg(counter++);
     }
     
-    QString newFolderPath = QDir(currentRoot.toLocalFile()).filePath(folderName);
+    QString newFolderPath = currentDir.filePath(folderName);
     if (QDir().mkpath(newFolderPath)) {
         // Refresh the directory listing to show the new folder
         if (dirModel) {
-            // Force a refresh of the KDirLister
             if (auto *lister = dirModel->dirLister()) {
-                lister->updateDirectory(currentRoot);
+                lister->updateDirectory(destinationUrl);
             }
         }
         
-        // Also refresh the proxy model
         if (proxy) {
             proxy->invalidate();
         }
         
-        // Update the views
         updateStatus();
         
-        // Try to select the new folder
-        QTimer::singleShot(100, this, [this, folderName]() {
-            // Try to select the newly created folder
-            if (proxy) {
-                for (int i = 0; i < proxy->rowCount(); ++i) {
-                    QModelIndex idx = proxy->index(i, 0);
-                    QString fileName = idx.data(Qt::DisplayRole).toString();
-                    if (fileName == folderName) {
-                        if (auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
-                            view->setCurrentIndex(idx);
-                            view->scrollTo(idx);
+        // Only attempt in-view selection when created in the active folder.
+        if (destinationUrl == currentRoot) {
+            QTimer::singleShot(100, this, [this, folderName]() {
+                if (proxy) {
+                    for (int i = 0; i < proxy->rowCount(); ++i) {
+                        QModelIndex idx = proxy->index(i, 0);
+                        QString fileName = idx.data(Qt::DisplayRole).toString();
+                        if (fileName == folderName) {
+                            if (auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
+                                view->setCurrentIndex(idx);
+                                view->scrollTo(idx);
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
-            }
-        });
+            });
+        }
     }
 }
 
@@ -1127,8 +1180,6 @@ void Pane::goBack() {
     m_historyIndex--;
     QUrl url = m_history[m_historyIndex];
     
-    // Temporarily set currentRoot to prevent adding to history
-    QUrl oldRoot = currentRoot;
     currentRoot = url;
     
     if (auto *l = dirModel->dirLister()) {
@@ -1144,8 +1195,6 @@ void Pane::goForward() {
     m_historyIndex++;
     QUrl url = m_history[m_historyIndex];
     
-    // Temporarily set currentRoot to prevent adding to history
-    QUrl oldRoot = currentRoot;
     currentRoot = url;
     
     if (auto *l = dirModel->dirLister()) {
@@ -1252,6 +1301,20 @@ void Pane::updateStatus() {
     int totalFiles = proxy->rowCount();
     int selectedFiles = 0;
     qint64 selectedSize = 0;
+
+    if (stack->currentWidget() == miller) {
+        const QList<QUrl> selected = miller->getSelectedUrls();
+        selectedFiles = selected.size();
+        for (const QUrl &url : selected) {
+            if (!url.isLocalFile()) continue;
+            QFileInfo fi(url.toLocalFile());
+            if (fi.isFile()) {
+                selectedSize += fi.size();
+            }
+        }
+        emit statusChanged(totalFiles, selectedFiles, selectedSize);
+        return;
+    }
 
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
     if (v && v->selectionModel()) {
@@ -1657,8 +1720,8 @@ void Pane::setSortCriteria(int criteria) {
     switch (criteria) {
         case 0: column = 0; break; // Name
         case 1: column = 1; break; // Size  
-        case 2: column = 2; break; // Type
-        case 3: column = 3; break; // Date Modified
+        case 2: column = 6; break; // Type
+        case 3: column = 2; break; // Date Modified
         default: column = 0; break;
     }
     
@@ -1674,4 +1737,3 @@ void Pane::setSortOrder(Qt::SortOrder order) {
     
     proxy->sort(currentColumn, order);
 }
-
