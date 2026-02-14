@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QDir>
 #include <QUrl>
+#include <QSizePolicy>
 #include <QScreen>
 #include <QGuiApplication>
 #include <QMediaPlayer>
@@ -88,6 +89,7 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
 
     videoWidget = new QVideoWidget(mediaPage);
     videoWidget->setMinimumHeight(300);
+    videoWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     videoWidget->setStyleSheet("background-color: #111111; border: 1px solid #3a3a3a; border-radius: 6px;");
     mediaLayout->addWidget(videoWidget, 1);
 
@@ -139,6 +141,28 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     });
     connect(mediaPlayer, &QMediaPlayer::errorOccurred, this,
             [this](QMediaPlayer::Error, const QString &errorText) {
+        const QString activeRawPath = activeMediaSource.toLocalFile();
+        const QString sourceRawPath = mediaPlayer->source().toLocalFile();
+        if (activeRawPath.isEmpty() || sourceRawPath.isEmpty()) {
+            return;
+        }
+
+        const QString activePath = QDir::cleanPath(activeRawPath);
+        const QString sourcePath = QDir::cleanPath(sourceRawPath);
+        if (sourcePath != activePath) {
+            // Ignore stale errors emitted after source switches.
+            return;
+        }
+
+        if (activeMediaIsVideo && !retriedVideoWithoutAudio) {
+            // Some desktops/backends fail video startup when audio sink init fails.
+            retriedVideoWithoutAudio = true;
+            mediaPlayer->setAudioOutput(nullptr);
+            mediaPlayer->setPosition(0);
+            mediaPlayer->play();
+            return;
+        }
+
         if (!errorText.isEmpty()) {
             showUnsupported(currentFilePath, errorText);
         } else {
@@ -227,6 +251,10 @@ bool QuickLookDialog::showText(const QString &path) {
 
 void QuickLookDialog::showMedia(const QString &path, bool isVideo) {
     QFileInfo fi(path);
+    activeMediaSource = QUrl::fromLocalFile(path);
+    activeMediaIsVideo = isVideo;
+    retriedVideoWithoutAudio = false;
+
     videoWidget->setVisible(isVideo);
     mediaInfoLabel->setText(
         isVideo
@@ -235,15 +263,18 @@ void QuickLookDialog::showMedia(const QString &path, bool isVideo) {
     );
     mediaSeekSlider->setRange(0, 0);
     mediaSeekSlider->setValue(0);
-    mediaPlayer->setSource(QUrl::fromLocalFile(path));
+    mediaPlayer->setAudioOutput(audioOutput);
+    mediaPlayer->setSource(activeMediaSource);
     mediaPlayer->play();
     stack->setCurrentIndex(3);
 }
 
 void QuickLookDialog::stopMedia() {
     if (!mediaPlayer) return;
+    activeMediaSource = QUrl();
+    activeMediaIsVideo = false;
+    retriedVideoWithoutAudio = false;
     mediaPlayer->stop();
-    mediaPlayer->setSource(QUrl());
     if (mediaSeekSlider) {
         mediaSeekSlider->setRange(0, 0);
         mediaSeekSlider->setValue(0);
@@ -280,8 +311,8 @@ void QuickLookDialog::showFile(const QString &path) {
     const QString mime = mt.name();
     const QString suffix = fi.suffix().toLower();
 
-    const QStringList audioSuffixes = {"mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "oga", "wma"};
-    const QStringList videoSuffixes = {"mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "flv", "mpeg", "mpg"};
+    const QStringList audioSuffixes = {"mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "oga", "wma", "aif", "aiff", "ac3", "mka"};
+    const QStringList videoSuffixes = {"mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "flv", "mpeg", "mpg", "3gp", "3g2", "ogv", "asf", "mts", "m2ts", "ts", "mxf", "vob"};
     const bool isAudio = mime.startsWith("audio/") || mime == "application/ogg" || audioSuffixes.contains(suffix);
     const bool isVideo = mime.startsWith("video/") || videoSuffixes.contains(suffix);
 

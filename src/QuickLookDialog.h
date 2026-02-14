@@ -1,6 +1,7 @@
 #pragma once
 #include <QDialog>
 #include <QString>
+#include <QUrl>
 class QStackedWidget;
 class QLabel;
 class QShortcut;
@@ -46,4 +47,7 @@ private:
     QLabel *mediaInfoLabel = nullptr;
     QPushButton *mediaPlayPauseButton = nullptr;
     QSlider *mediaSeekSlider = nullptr;
+    QUrl activeMediaSource;
+    bool activeMediaIsVideo = false;
+    bool retriedVideoWithoutAudio = false;
 };
