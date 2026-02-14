@@ -4,6 +4,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QStackedWidget>
+#include <QImage>
 #include <QImageReader>
 #include <QPixmap>
 #include <QScrollArea>
@@ -17,9 +18,15 @@
 #include <QDir>
 #include <QUrl>
 #include <QSizePolicy>
+#include <QRegularExpression>
+#include <QDate>
+#include <QDateTime>
+#include <QIcon>
+#include <QPainter>
 #include <QScreen>
 #include <QGuiApplication>
 #include <QMediaPlayer>
+#include <QMediaMetaData>
 #include <QAudioOutput>
 #include <QVideoWidget>
 #include <poppler-qt6.h>
@@ -85,13 +92,74 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     auto *mediaPage = new QWidget;
     auto *mediaLayout = new QVBoxLayout(mediaPage);
     mediaLayout->setContentsMargins(12, 12, 12, 12);
-    mediaLayout->setSpacing(8);
+    mediaLayout->setSpacing(10);
 
-    videoWidget = new QVideoWidget(mediaPage);
+    mediaContentStack = new QStackedWidget(mediaPage);
+    mediaContentStack->setStyleSheet(
+        "QStackedWidget { background-color: #111111; border: 1px solid #3a3a3a; border-radius: 8px; }"
+    );
+    mediaLayout->addWidget(mediaContentStack, 1);
+
+    videoWidget = new QVideoWidget(mediaContentStack);
     videoWidget->setMinimumHeight(300);
     videoWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    videoWidget->setStyleSheet("background-color: #111111; border: 1px solid #3a3a3a; border-radius: 6px;");
-    mediaLayout->addWidget(videoWidget, 1);
+    videoWidget->setStyleSheet("background-color: #111111; border-radius: 7px;");
+    mediaContentStack->addWidget(videoWidget);
+
+    audioPanel = new QWidget(mediaContentStack);
+    auto *audioPanelLayout = new QVBoxLayout(audioPanel);
+    audioPanelLayout->setContentsMargins(28, 24, 28, 24);
+    audioPanelLayout->setSpacing(16);
+    audioPanelLayout->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+
+    audioArtworkLabel = new QLabel(audioPanel);
+    audioArtworkLabel->setFixedSize(260, 260);
+    audioArtworkLabel->setAlignment(Qt::AlignCenter);
+    audioArtworkLabel->setStyleSheet(
+        "QLabel { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #2a2f38, stop:1 #1a1d23); "
+        "border: 1px solid #3a3f49; border-radius: 14px; }"
+    );
+    audioPanelLayout->addWidget(audioArtworkLabel, 0, Qt::AlignHCenter);
+
+    auto *audioMetaCard = new QWidget(audioPanel);
+    audioMetaCard->setMinimumWidth(340);
+    audioMetaCard->setMaximumWidth(560);
+    audioMetaCard->setStyleSheet(
+        "QWidget { background-color: #202327; border: 1px solid #363b43; border-radius: 10px; }"
+    );
+    auto *audioMetaLayout = new QVBoxLayout(audioMetaCard);
+    audioMetaLayout->setContentsMargins(18, 14, 18, 14);
+    audioMetaLayout->setSpacing(6);
+    audioMetaLayout->setAlignment(Qt::AlignHCenter);
+
+    audioTitleLabel = new QLabel(audioMetaCard);
+    audioTitleLabel->setAlignment(Qt::AlignCenter);
+    audioTitleLabel->setWordWrap(true);
+    audioTitleLabel->setStyleSheet("QLabel { color: #f2f2f2; font-size: 22px; font-weight: 700; }");
+    audioMetaLayout->addWidget(audioTitleLabel);
+
+    audioArtistLabel = new QLabel(audioMetaCard);
+    audioArtistLabel->setAlignment(Qt::AlignCenter);
+    audioArtistLabel->setWordWrap(true);
+    audioArtistLabel->setStyleSheet("QLabel { color: #a8beff; font-size: 16px; font-weight: 600; }");
+    audioMetaLayout->addWidget(audioArtistLabel);
+
+    audioAlbumLabel = new QLabel(audioMetaCard);
+    audioAlbumLabel->setAlignment(Qt::AlignCenter);
+    audioAlbumLabel->setWordWrap(true);
+    audioAlbumLabel->setStyleSheet("QLabel { color: #c3c7cf; font-size: 14px; }");
+    audioMetaLayout->addWidget(audioAlbumLabel);
+
+    audioYearLabel = new QLabel(audioMetaCard);
+    audioYearLabel->setAlignment(Qt::AlignCenter);
+    audioYearLabel->setStyleSheet(
+        "QLabel { color: #d7dbe2; font-size: 12px; background-color: #2d333d; border: 1px solid #47505f; "
+        "border-radius: 10px; padding: 2px 10px; }"
+    );
+    audioMetaLayout->addWidget(audioYearLabel, 0, Qt::AlignCenter);
+
+    audioPanelLayout->addWidget(audioMetaCard, 0, Qt::AlignHCenter);
+    mediaContentStack->addWidget(audioPanel);
 
     mediaInfoLabel = new QLabel(mediaPage);
     mediaInfoLabel->setAlignment(Qt::AlignCenter);
@@ -101,7 +169,11 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
 
     auto *controlsLayout = new QHBoxLayout;
     mediaPlayPauseButton = new QPushButton("Pause", mediaPage);
-    mediaPlayPauseButton->setMinimumWidth(72);
+    mediaPlayPauseButton->setMinimumWidth(80);
+    mediaPlayPauseButton->setStyleSheet(
+        "QPushButton { background-color: #2d333d; color: #e7eaf0; border: 1px solid #47505f; border-radius: 6px; padding: 4px 10px; }"
+        "QPushButton:hover { background-color: #353d49; }"
+    );
     controlsLayout->addWidget(mediaPlayPauseButton);
 
     mediaSeekSlider = new QSlider(Qt::Horizontal, mediaPage);
@@ -136,6 +208,7 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     connect(mediaPlayer, &QMediaPlayer::durationChanged, this, [this](qint64 duration) {
         mediaSeekSlider->setRange(0, static_cast<int>(duration));
     });
+    connect(mediaPlayer, &QMediaPlayer::metaDataChanged, this, &QuickLookDialog::updateAudioMetadata);
     connect(mediaSeekSlider, &QSlider::sliderMoved, this, [this](int position) {
         mediaPlayer->setPosition(position);
     });
@@ -249,23 +322,159 @@ bool QuickLookDialog::showText(const QString &path) {
     return true;
 }
 
+void QuickLookDialog::setAudioArtwork(const QImage &image) {
+    if (!audioArtworkLabel) return;
+
+    QPixmap artwork;
+    if (!image.isNull()) {
+        artwork = QPixmap::fromImage(image);
+    } else {
+        QIcon icon = QIcon::fromTheme("audio-x-generic");
+        artwork = icon.pixmap(132, 132);
+        if (artwork.isNull()) {
+            artwork = QPixmap(132, 132);
+            artwork.fill(Qt::transparent);
+            QPainter p(&artwork);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor("#d6dde8"));
+            p.drawEllipse(artwork.rect().adjusted(8, 8, -8, -8));
+        }
+    }
+
+    if (!artwork.isNull()) {
+        audioArtworkLabel->setPixmap(artwork.scaled(
+            audioArtworkLabel->size(),
+            Qt::KeepAspectRatio,
+            Qt::SmoothTransformation
+        ));
+    } else {
+        audioArtworkLabel->setPixmap(QPixmap());
+    }
+}
+
+void QuickLookDialog::resetAudioMetadata(const QString &path) {
+    QFileInfo fi(path);
+    const QString fallbackTitle = !fi.completeBaseName().isEmpty() ? fi.completeBaseName() : fi.fileName();
+    if (audioTitleLabel) {
+        audioTitleLabel->setText(fallbackTitle.isEmpty() ? "Unknown Track" : fallbackTitle);
+    }
+    if (audioArtistLabel) {
+        audioArtistLabel->setText("Unknown Artist");
+    }
+    if (audioAlbumLabel) {
+        audioAlbumLabel->setText("Unknown Album");
+    }
+    if (audioYearLabel) {
+        audioYearLabel->setText("Year Unknown");
+    }
+    setAudioArtwork(QImage());
+
+    if (mediaInfoLabel) {
+        mediaInfoLabel->setText(QString("Audio preview: %1").arg(fi.fileName()));
+    }
+}
+
+void QuickLookDialog::updateAudioMetadata() {
+    if (activeMediaIsVideo || currentFilePath.isEmpty() || !mediaPlayer) {
+        return;
+    }
+
+    const QMediaMetaData md = mediaPlayer->metaData();
+    QFileInfo fi(currentFilePath);
+
+    QString title = md.stringValue(QMediaMetaData::Title).trimmed();
+    if (title.isEmpty()) {
+        title = fi.completeBaseName();
+    }
+    if (title.isEmpty()) {
+        title = fi.fileName();
+    }
+    if (title.isEmpty()) {
+        title = "Unknown Track";
+    }
+
+    QString artist;
+    const QStringList contributingArtists = md.value(QMediaMetaData::ContributingArtist).toStringList();
+    for (const QString &value : contributingArtists) {
+        if (!value.trimmed().isEmpty()) {
+            artist = value.trimmed();
+            break;
+        }
+    }
+    if (artist.isEmpty()) artist = md.stringValue(QMediaMetaData::AlbumArtist).trimmed();
+    if (artist.isEmpty()) artist = md.stringValue(QMediaMetaData::Author).trimmed();
+    if (artist.isEmpty()) artist = md.stringValue(QMediaMetaData::LeadPerformer).trimmed();
+    if (artist.isEmpty()) artist = "Unknown Artist";
+
+    QString album = md.stringValue(QMediaMetaData::AlbumTitle).trimmed();
+    if (album.isEmpty()) {
+        album = "Unknown Album";
+    }
+
+    QString year;
+    const QVariant dateValue = md.value(QMediaMetaData::Date);
+    if (dateValue.canConvert<QDateTime>()) {
+        const QDate d = dateValue.toDateTime().date();
+        if (d.isValid()) year = d.toString("yyyy");
+    }
+    if (year.isEmpty() && dateValue.canConvert<QDate>()) {
+        const QDate d = dateValue.toDate();
+        if (d.isValid()) year = d.toString("yyyy");
+    }
+    if (year.isEmpty()) {
+        const QString dateText = dateValue.toString();
+        const QRegularExpressionMatch m = QRegularExpression("(\\d{4})").match(dateText);
+        if (m.hasMatch()) {
+            year = m.captured(1);
+        }
+    }
+    if (year.isEmpty()) {
+        year = "Year Unknown";
+    }
+
+    if (audioTitleLabel) audioTitleLabel->setText(title);
+    if (audioArtistLabel) audioArtistLabel->setText(artist);
+    if (audioAlbumLabel) audioAlbumLabel->setText(album);
+    if (audioYearLabel) audioYearLabel->setText(year);
+
+    QImage artwork = md.value(QMediaMetaData::CoverArtImage).value<QImage>();
+    if (artwork.isNull()) {
+        artwork = md.value(QMediaMetaData::ThumbnailImage).value<QImage>();
+    }
+    if (!artwork.isNull()) {
+        setAudioArtwork(artwork);
+    }
+}
+
 void QuickLookDialog::showMedia(const QString &path, bool isVideo) {
     QFileInfo fi(path);
     activeMediaSource = QUrl::fromLocalFile(path);
     activeMediaIsVideo = isVideo;
     retriedVideoWithoutAudio = false;
 
-    videoWidget->setVisible(isVideo);
-    mediaInfoLabel->setText(
-        isVideo
-            ? QString("Video preview: %1").arg(fi.fileName())
-            : QString("Audio preview: %1").arg(fi.fileName())
-    );
+    if (isVideo) {
+        if (mediaContentStack && videoWidget) {
+            mediaContentStack->setCurrentWidget(videoWidget);
+        }
+        if (mediaInfoLabel) {
+            mediaInfoLabel->setText(QString("Video preview: %1").arg(fi.fileName()));
+        }
+    } else {
+        if (mediaContentStack && audioPanel) {
+            mediaContentStack->setCurrentWidget(audioPanel);
+        }
+        resetAudioMetadata(path);
+    }
+
     mediaSeekSlider->setRange(0, 0);
     mediaSeekSlider->setValue(0);
     mediaPlayer->setAudioOutput(audioOutput);
     mediaPlayer->setSource(activeMediaSource);
     mediaPlayer->play();
+    if (!isVideo) {
+        updateAudioMetadata();
+    }
     stack->setCurrentIndex(3);
 }
 

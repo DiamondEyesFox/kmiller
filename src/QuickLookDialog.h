@@ -7,6 +7,8 @@ class QLabel;
 class QShortcut;
 class QMediaPlayer;
 class QAudioOutput;
+class QImage;
+class QWidget;
 class QVideoWidget;
 class QPushButton;
 class QSlider;
@@ -22,6 +24,7 @@ private slots:
     void navigateNext();
     void navigatePrevious();
     void toggleMediaPlayback();
+    void updateAudioMetadata();
 
 private:
     void showImage(const QString &path);
@@ -30,6 +33,8 @@ private:
     void showMedia(const QString &path, bool isVideo);
     void stopMedia();
     void showUnsupported(const QString &path, const QString &mime);
+    void resetAudioMetadata(const QString &path);
+    void setAudioArtwork(const QImage &image);
 
     Pane *pane = nullptr;
     QString currentFilePath;
@@ -43,7 +48,14 @@ private:
 
     QMediaPlayer *mediaPlayer = nullptr;
     QAudioOutput *audioOutput = nullptr;
+    QStackedWidget *mediaContentStack = nullptr;
     QVideoWidget *videoWidget = nullptr;
+    QWidget *audioPanel = nullptr;
+    QLabel *audioArtworkLabel = nullptr;
+    QLabel *audioTitleLabel = nullptr;
+    QLabel *audioArtistLabel = nullptr;
+    QLabel *audioAlbumLabel = nullptr;
+    QLabel *audioYearLabel = nullptr;
     QLabel *mediaInfoLabel = nullptr;
     QPushButton *mediaPlayPauseButton = nullptr;
     QSlider *mediaSeekSlider = nullptr;
