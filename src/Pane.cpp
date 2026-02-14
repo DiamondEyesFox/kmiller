@@ -388,6 +388,25 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
                 this, &Pane::updateStatus);
         connect(v, &QAbstractItemView::activated, this, &Pane::onActivated); // double-click opens
         v->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+        connect(v, &QAbstractItemView::clicked, this, [this, v](const QModelIndex &idx) {
+            if (!idx.isValid()) return;
+            if (!v->selectionModel() || !v->selectionModel()->isSelected(idx)) return;
+
+            const bool sameTarget = (m_renameClickView == v && m_renameClickIndex == idx);
+            const qint64 elapsedMs = m_renameClickTimer.isValid() ? m_renameClickTimer.elapsed() : -1;
+            // Finder-style slow second click on selected item starts rename.
+            if (sameTarget && elapsedMs >= 500 && elapsedMs <= 2000) {
+                beginInlineRename(v, idx);
+                m_renameClickTimer.invalidate();
+                m_renameClickIndex = QPersistentModelIndex();
+                return;
+            }
+
+            m_renameClickView = v;
+            m_renameClickIndex = idx;
+            m_renameClickTimer.restart();
+        });
         
         // Install spacebar event filter
         v->installEventFilter(this);
@@ -516,6 +535,14 @@ void Pane::onCurrentChanged(const QModelIndex &current, const QModelIndex &) {
 }
 
 void Pane::quickLookSelected() {
+    if (stack->currentWidget() == miller) {
+        const QList<QUrl> urls = miller->getSelectedUrls();
+        if (urls.isEmpty() || !urls.first().isLocalFile()) return;
+        if (!ql) ql = new QuickLookDialog(this);
+        ql->showFile(urls.first().toLocalFile());
+        return;
+    }
+
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
     if (!v) return;
     
@@ -531,7 +558,14 @@ void Pane::setPreviewVisible(bool on) {
     if (preview) preview->setVisible(on);
     if (on) {
         // seed with current selection if any
-        if (auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
+        if (stack->currentWidget() == miller) {
+            const QList<QUrl> urls = miller->getSelectedUrls();
+            if (!urls.isEmpty() && urls.first().isValid()) {
+                updatePreviewForUrl(urls.first());
+            } else {
+                clearPreview();
+            }
+        } else if (auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
             const QUrl u = urlForIndex(v->currentIndex());
             if (u.isValid()) updatePreviewForUrl(u);
             else clearPreview();
@@ -1090,24 +1124,34 @@ void Pane::moveToTrash() {
 }
 
 void Pane::renameSelected() {
+    if (stack->currentWidget() == miller) {
+        miller->renameSelected();
+        return;
+    }
+
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
     if (!v || !v->selectionModel()) return;
 
     const QModelIndex current = v->selectionModel()->currentIndex();
     if (!current.isValid()) return;
 
-    // Temporarily enable editing
-    v->setEditTriggers(QAbstractItemView::AllEditTriggers);
-    v->edit(current);
+    beginInlineRename(v, current);
+}
+
+void Pane::beginInlineRename(QAbstractItemView *view, const QModelIndex &index) {
+    if (!view || !index.isValid()) return;
+    view->setCurrentIndex(index);
+    view->setEditTriggers(QAbstractItemView::AllEditTriggers);
+    view->edit(index);
 
     // Connect to delegate's closeEditor to restore no-edit state when done
     // Use a queued single-shot to avoid issues with multiple connections
-    QAbstractItemDelegate *delegate = v->itemDelegate();
+    QAbstractItemDelegate *delegate = view->itemDelegate();
     if (delegate) {
         // Disconnect any previous connections to avoid stacking
         disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
-        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [v]() {
-            v->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [view]() {
+            view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         }, Qt::QueuedConnection);
     }
 }
@@ -1337,6 +1381,24 @@ void Pane::updateStatus() {
 }
 
 void Pane::openSelected() {
+    if (stack->currentWidget() == miller) {
+        const QList<QUrl> urls = miller->getSelectedUrls();
+        if (urls.isEmpty()) return;
+
+        const QUrl url = urls.first();
+        if (!url.isValid()) return;
+
+        QFileInfo fi(url.toLocalFile());
+        if (fi.isDir()) {
+            setRoot(url);
+        } else {
+            FileOpsService::openUrl(url, this);
+        }
+
+        if (m_previewVisible) updatePreviewForUrl(url);
+        return;
+    }
+
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
     if (!v || !v->selectionModel()) return;
 
@@ -1364,19 +1426,54 @@ void Pane::focusView() {
 
 bool Pane::eventFilter(QObject *obj, QEvent *event) {
     if (event->type() == QEvent::KeyPress) {
+        auto *view = qobject_cast<QAbstractItemView*>(obj);
+        if (!view) {
+            return QWidget::eventFilter(obj, event);
+        }
+
         QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Space) {
             // Handle spacebar for QuickLook in all view modes
-            auto *view = qobject_cast<QAbstractItemView*>(obj);
-            if (view) {
-                QModelIndex current = view->currentIndex();
-                if (current.isValid()) {
-                    QUrl url = urlForIndex(current);
-                    if (url.isValid()) {
-                        quickLookSelected();
-                        return true; // Event handled
-                    }
+            QModelIndex current = view->currentIndex();
+            if (current.isValid()) {
+                QUrl url = urlForIndex(current);
+                if (url.isValid()) {
+                    quickLookSelected();
+                    return true; // Event handled
                 }
+            }
+        }
+
+        if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
+            QModelIndex current = view->currentIndex();
+            if (!current.isValid()) {
+                return true;
+            }
+
+            if (keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
+                onActivated(current);  // Ctrl+Enter opens selection.
+            } else {
+                beginInlineRename(view, current);  // Return renames selection.
+            }
+            return true;
+        }
+
+        if (keyEvent->key() == Qt::Key_F2) {
+            QModelIndex current = view->currentIndex();
+            if (current.isValid()) {
+                beginInlineRename(view, current);
+                return true;
+            }
+        }
+
+        if (!keyEvent->modifiers().testFlag(Qt::ControlModifier)
+            && !keyEvent->modifiers().testFlag(Qt::AltModifier)
+            && !keyEvent->modifiers().testFlag(Qt::MetaModifier)) {
+            // Typing any navigation/search character should cancel pending slow-click rename gesture.
+            const QString typed = keyEvent->text();
+            if (!typed.isEmpty() && typed.at(0).isPrint()) {
+                m_renameClickTimer.invalidate();
+                m_renameClickIndex = QPersistentModelIndex();
             }
         }
     }

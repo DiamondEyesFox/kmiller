@@ -6,6 +6,7 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QPointer>
+#include <QAbstractItemDelegate>
 #include <QTimer>
 #include <QListView>
 
@@ -172,6 +173,22 @@ void MillerView::addColumn(const QUrl &url) {
         view->setFocus();
 
         if (!idx.isValid()) return;
+
+        if (QItemSelectionModel *sel = view->selectionModel(); sel && sel->isSelected(idx)) {
+            const bool sameTarget = (m_renameClickView == view && m_renameClickIndex == idx);
+            const qint64 elapsedMs = m_renameClickTimer.isValid() ? m_renameClickTimer.elapsed() : -1;
+            // Finder-style slow second click on selected item enters rename mode.
+            if (sameTarget && elapsedMs >= 500 && elapsedMs <= 2000) {
+                beginInlineRename(view, idx);
+                m_renameClickTimer.invalidate();
+                m_renameClickIndex = QPersistentModelIndex();
+                return;
+            }
+            m_renameClickView = view;
+            m_renameClickIndex = idx;
+            m_renameClickTimer.restart();
+        }
+
         const QString path = model->filePath(idx);
         if (path.isEmpty()) return;
 
@@ -265,20 +282,31 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
     }
 
     if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
-        // Enter/Return: enter directories OR open files
-        QModelIndex idx = view->currentIndex();
-        if (!idx.isValid()) return true;
-        const QString p = model->filePath(idx);
-        if (p.isEmpty()) return true;
+        if (ke->modifiers().testFlag(Qt::ControlModifier)) {
+            // Ctrl+Enter: open/enter selection.
+            QModelIndex idx = view->currentIndex();
+            if (!idx.isValid()) return true;
+            const QString p = model->filePath(idx);
+            if (p.isEmpty()) return true;
 
-        pruneColumnsAfter(view);
+            pruneColumnsAfter(view);
 
-        QFileInfo fi(p);
-        if (fi.isDir()) {
-            addColumn(QUrl::fromLocalFile(p));
-        } else {
-            FileOpsService::openUrl(QUrl::fromLocalFile(p), this);
+            QFileInfo fi(p);
+            if (fi.isDir()) {
+                addColumn(QUrl::fromLocalFile(p));
+            } else {
+                FileOpsService::openUrl(QUrl::fromLocalFile(p), this);
+            }
+            return true;
         }
+
+        // Return: rename selected item (Finder behavior).
+        renameSelected();
+        return true;
+    }
+
+    if (ke->key() == Qt::Key_F2) {
+        renameSelected();
         return true;
     }
 
@@ -318,6 +346,40 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
     }
 
     return QWidget::eventFilter(obj, event);
+}
+
+void MillerView::beginInlineRename(QListView *view, const QModelIndex &idx) {
+    if (!view || !idx.isValid()) return;
+    view->setCurrentIndex(idx);
+    view->setEditTriggers(QAbstractItemView::AllEditTriggers);
+    view->edit(idx);
+
+    QAbstractItemDelegate *delegate = view->itemDelegate();
+    if (delegate) {
+        disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
+        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [view]() {
+            view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        }, Qt::QueuedConnection);
+    }
+}
+
+void MillerView::renameSelected() {
+    if (columns.isEmpty()) return;
+
+    QListView *focusedView = nullptr;
+    for (QListView *view : columns) {
+        if (view->hasFocus()) {
+            focusedView = view;
+            break;
+        }
+    }
+    if (!focusedView) {
+        focusedView = columns.last();
+    }
+
+    const QModelIndex current = focusedView->currentIndex();
+    if (!current.isValid()) return;
+    beginInlineRename(focusedView, current);
 }
 
 void MillerView::typeToSelect(QListView *view, const QString &text) {

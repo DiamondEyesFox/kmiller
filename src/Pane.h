@@ -3,6 +3,9 @@
 #include <QUrl>
 #include <QPoint>
 #include <QAbstractProxyModel>
+#include <QElapsedTimer>
+#include <QPersistentModelIndex>
+#include <QPointer>
 
 class QToolBar;
 class QComboBox;
@@ -13,6 +16,7 @@ class QTreeView;
 class QSplitter;
 class QLabel;
 class QTextEdit;
+class QAbstractItemView;
 
 class KUrlNavigator;
 class MillerView;
@@ -113,6 +117,7 @@ private:
     void compressSelected();
     void extractArchive(const QUrl &archiveUrl);
     void createNewFolderIn(const QUrl &targetFolder);
+    void beginInlineRename(QAbstractItemView *view, const QModelIndex &index);
     void pasteFilesToDestination(const QUrl &destination);
     bool isClipboardCutOperation() const;
 
@@ -152,4 +157,9 @@ private:
 
     // Initialization state
     bool m_viewInitialized = false;
+
+    // Finder-style slow second-click rename state for classic views.
+    QPointer<QAbstractItemView> m_renameClickView;
+    QPersistentModelIndex m_renameClickIndex;
+    QElapsedTimer m_renameClickTimer;
 };
