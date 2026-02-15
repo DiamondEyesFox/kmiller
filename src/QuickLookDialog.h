@@ -10,7 +10,7 @@ class QAudioOutput;
 class QImage;
 class QWidget;
 class QVideoWidget;
-class QPushButton;
+class QToolButton;
 class QSlider;
 class Pane;
 
@@ -35,6 +35,10 @@ private:
     void showUnsupported(const QString &path, const QString &mime);
     void resetAudioMetadata(const QString &path);
     void setAudioArtwork(const QImage &image);
+    QString formatMediaTime(qint64 ms) const;
+    void seekRelative(qint64 deltaMs);
+    void updatePlaybackButtonIcon();
+    void updateMuteButtonIcon();
 
     Pane *pane = nullptr;
     QString currentFilePath;
@@ -57,8 +61,14 @@ private:
     QLabel *audioAlbumLabel = nullptr;
     QLabel *audioYearLabel = nullptr;
     QLabel *mediaInfoLabel = nullptr;
-    QPushButton *mediaPlayPauseButton = nullptr;
+    QToolButton *mediaRewindButton = nullptr;
+    QToolButton *mediaPlayPauseButton = nullptr;
+    QToolButton *mediaForwardButton = nullptr;
+    QLabel *mediaCurrentTimeLabel = nullptr;
     QSlider *mediaSeekSlider = nullptr;
+    QLabel *mediaDurationLabel = nullptr;
+    QToolButton *mediaMuteButton = nullptr;
+    QSlider *mediaVolumeSlider = nullptr;
     QUrl activeMediaSource;
     bool activeMediaIsVideo = false;
     bool retriedVideoWithoutAudio = false;
