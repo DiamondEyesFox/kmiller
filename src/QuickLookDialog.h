@@ -49,6 +49,9 @@ private:
     QShortcut *spaceShortcut = nullptr;
     QShortcut *upShortcut = nullptr;
     QShortcut *downShortcut = nullptr;
+    QShortcut *jShortcut = nullptr;
+    QShortcut *kShortcut = nullptr;
+    QShortcut *lShortcut = nullptr;
 
     QMediaPlayer *mediaPlayer = nullptr;
     QAudioOutput *audioOutput = nullptr;

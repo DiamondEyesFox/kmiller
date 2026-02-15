@@ -191,16 +191,19 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     mediaRewindButton = new QToolButton(controlsShell);
     mediaRewindButton->setIcon(style()->standardIcon(QStyle::SP_MediaSeekBackward));
     mediaRewindButton->setToolTip("Back 10 seconds");
+    mediaRewindButton->setFocusPolicy(Qt::NoFocus);
     controlsLayout->addWidget(mediaRewindButton);
 
     mediaPlayPauseButton = new QToolButton(controlsShell);
     mediaPlayPauseButton->setIconSize(QSize(20, 20));
     mediaPlayPauseButton->setToolTip("Play/Pause");
+    mediaPlayPauseButton->setFocusPolicy(Qt::NoFocus);
     controlsLayout->addWidget(mediaPlayPauseButton);
 
     mediaForwardButton = new QToolButton(controlsShell);
     mediaForwardButton->setIcon(style()->standardIcon(QStyle::SP_MediaSeekForward));
     mediaForwardButton->setToolTip("Forward 10 seconds");
+    mediaForwardButton->setFocusPolicy(Qt::NoFocus);
     controlsLayout->addWidget(mediaForwardButton);
 
     mediaCurrentTimeLabel = new QLabel("0:00", controlsShell);
@@ -211,6 +214,7 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
 
     mediaSeekSlider = new QSlider(Qt::Horizontal, controlsShell);
     mediaSeekSlider->setRange(0, 0);
+    mediaSeekSlider->setFocusPolicy(Qt::NoFocus);
     controlsLayout->addWidget(mediaSeekSlider, 1);
 
     mediaDurationLabel = new QLabel("0:00", controlsShell);
@@ -221,11 +225,13 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
 
     mediaMuteButton = new QToolButton(controlsShell);
     mediaMuteButton->setToolTip("Mute");
+    mediaMuteButton->setFocusPolicy(Qt::NoFocus);
     controlsLayout->addWidget(mediaMuteButton);
 
     mediaVolumeSlider = new QSlider(Qt::Horizontal, controlsShell);
     mediaVolumeSlider->setRange(0, 100);
     mediaVolumeSlider->setFixedWidth(90);
+    mediaVolumeSlider->setFocusPolicy(Qt::NoFocus);
     controlsLayout->addWidget(mediaVolumeSlider);
 
     mediaLayout->addWidget(controlsShell);
@@ -333,14 +339,41 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(escShortcut, &QShortcut::activated, this, &QDialog::close);
 
+    // Space-to-close is handled by Pane while retaining focus there; keep disabled here to avoid
+    // immediate open/close races on media previews with interactive controls.
     spaceShortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
-    connect(spaceShortcut, &QShortcut::activated, this, &QDialog::close);
+    spaceShortcut->setEnabled(false);
 
     upShortcut = new QShortcut(QKeySequence(Qt::Key_Up), this);
     connect(upShortcut, &QShortcut::activated, this, &QuickLookDialog::navigatePrevious);
 
     downShortcut = new QShortcut(QKeySequence(Qt::Key_Down), this);
     connect(downShortcut, &QShortcut::activated, this, &QuickLookDialog::navigateNext);
+
+    // YouTube-style media shortcuts while Quick Look is visible.
+    jShortcut = new QShortcut(QKeySequence(Qt::Key_J), this);
+    jShortcut->setContext(Qt::ApplicationShortcut);
+    connect(jShortcut, &QShortcut::activated, this, [this]() {
+        if (isVisible() && mediaPlayer && mediaPlayer->duration() > 0) {
+            seekRelative(-10000);
+        }
+    });
+
+    kShortcut = new QShortcut(QKeySequence(Qt::Key_K), this);
+    kShortcut->setContext(Qt::ApplicationShortcut);
+    connect(kShortcut, &QShortcut::activated, this, [this]() {
+        if (isVisible() && mediaPlayer && mediaPlayer->duration() > 0) {
+            toggleMediaPlayback();
+        }
+    });
+
+    lShortcut = new QShortcut(QKeySequence(Qt::Key_L), this);
+    lShortcut->setContext(Qt::ApplicationShortcut);
+    connect(lShortcut, &QShortcut::activated, this, [this]() {
+        if (isVisible() && mediaPlayer && mediaPlayer->duration() > 0) {
+            seekRelative(10000);
+        }
+    });
 
     connect(this, &QDialog::finished, this, [this](int) {
         stopMedia();
