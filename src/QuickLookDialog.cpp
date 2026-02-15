@@ -9,7 +9,7 @@
 #include <QPixmap>
 #include <QScrollArea>
 #include <QTextEdit>
-#include <QToolButton>
+#include <QPushButton>
 #include <QSlider>
 #include <QFileInfo>
 #include <QMimeDatabase>
@@ -23,7 +23,6 @@
 #include <QDateTime>
 #include <QIcon>
 #include <QPainter>
-#include <QStyle>
 #include <QScreen>
 #include <QGuiApplication>
 #include <QMediaPlayer>
@@ -31,13 +30,14 @@
 #include <QAudioOutput>
 #include <QVideoWidget>
 #include <poppler-qt6.h>
+#include <algorithm>
 
 QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(parentPane) {
     // Frameless, dark, minimal - like macOS Quick Look
-    // Use Tool flag so it floats above main window but doesn't steal focus
-    setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
+    // Use a regular top-level window so stacking/focus is reliable across launch contexts.
+    setWindowFlags(Qt::FramelessWindowHint | Qt::Window | Qt::WindowStaysOnTopHint);
     setAttribute(Qt::WA_TranslucentBackground, false);
-    setAttribute(Qt::WA_ShowWithoutActivating, true);  // Don't steal focus when shown
+    setAttribute(Qt::WA_ShowWithoutActivating, false);
     setModal(false);
     resize(800, 600);
 
@@ -93,7 +93,7 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     auto *mediaPage = new QWidget;
     auto *mediaLayout = new QVBoxLayout(mediaPage);
     mediaLayout->setContentsMargins(12, 12, 12, 12);
-    mediaLayout->setSpacing(8);
+    mediaLayout->setSpacing(10);
 
     mediaContentStack = new QStackedWidget(mediaPage);
     mediaContentStack->setStyleSheet(
@@ -108,50 +108,50 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     mediaContentStack->addWidget(videoWidget);
 
     audioPanel = new QWidget(mediaContentStack);
-    audioPanel->setObjectName("audioPanel");
-    audioPanel->setStyleSheet(
-        "#audioPanel { background-color: #171a1f; border-radius: 7px; }"
-    );
     auto *audioPanelLayout = new QHBoxLayout(audioPanel);
-    audioPanelLayout->setContentsMargins(28, 24, 28, 24);
-    audioPanelLayout->setSpacing(22);
+    audioPanelLayout->setContentsMargins(24, 24, 24, 24);
+    audioPanelLayout->setSpacing(18);
     audioPanelLayout->setAlignment(Qt::AlignCenter);
 
     audioArtworkLabel = new QLabel(audioPanel);
-    audioArtworkLabel->setFixedSize(250, 250);
+    audioArtworkLabel->setFixedSize(240, 240);
     audioArtworkLabel->setAlignment(Qt::AlignCenter);
     audioArtworkLabel->setStyleSheet(
         "QLabel { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #2a2f38, stop:1 #1a1d23); "
-        "border: 1px solid #3a3f49; border-radius: 12px; }"
+        "border: 1px solid #3a3f49; border-radius: 14px; }"
     );
     audioPanelLayout->addWidget(audioArtworkLabel, 0, Qt::AlignVCenter);
 
     auto *audioMetaCard = new QWidget(audioPanel);
-    audioMetaCard->setMinimumWidth(320);
-    audioMetaCard->setMaximumWidth(620);
+    audioMetaCard->setObjectName("audioMetaCard");
+    audioMetaCard->setMinimumWidth(360);
+    audioMetaCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     audioMetaCard->setStyleSheet(
-        "QWidget { background-color: #202327; border: 1px solid #363b43; border-radius: 10px; }"
+        "#audioMetaCard { background-color: #202327; border: 1px solid #363b43; border-radius: 10px; }"
     );
     auto *audioMetaLayout = new QVBoxLayout(audioMetaCard);
-    audioMetaLayout->setContentsMargins(20, 18, 20, 18);
+    audioMetaLayout->setContentsMargins(20, 16, 20, 16);
     audioMetaLayout->setSpacing(8);
     audioMetaLayout->setAlignment(Qt::AlignVCenter);
 
     audioTitleLabel = new QLabel(audioMetaCard);
     audioTitleLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     audioTitleLabel->setWordWrap(true);
-    audioTitleLabel->setStyleSheet("QLabel { color: #f2f2f2; font-size: 24px; font-weight: 700; }");
+    audioTitleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    audioTitleLabel->setStyleSheet("QLabel { color: #f2f2f2; font-size: 22px; font-weight: 700; }");
     audioMetaLayout->addWidget(audioTitleLabel);
 
     audioArtistLabel = new QLabel(audioMetaCard);
     audioArtistLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     audioArtistLabel->setWordWrap(true);
-    audioArtistLabel->setStyleSheet("QLabel { color: #a8beff; font-size: 17px; font-weight: 600; }");
+    audioArtistLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    audioArtistLabel->setStyleSheet("QLabel { color: #a8beff; font-size: 16px; font-weight: 600; }");
     audioMetaLayout->addWidget(audioArtistLabel);
 
     audioAlbumLabel = new QLabel(audioMetaCard);
     audioAlbumLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     audioAlbumLabel->setWordWrap(true);
+    audioAlbumLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     audioAlbumLabel->setStyleSheet("QLabel { color: #c3c7cf; font-size: 14px; }");
     audioMetaLayout->addWidget(audioAlbumLabel);
 
@@ -159,9 +159,9 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     audioYearLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     audioYearLabel->setStyleSheet(
         "QLabel { color: #d7dbe2; font-size: 12px; background-color: #2d333d; border: 1px solid #47505f; "
-        "border-radius: 10px; padding: 2px 10px; max-width: 120px; }"
+        "border-radius: 10px; padding: 2px 10px; max-width: 130px; }"
     );
-    audioMetaLayout->addWidget(audioYearLabel);
+    audioMetaLayout->addWidget(audioYearLabel, 0, Qt::AlignLeft);
     audioMetaLayout->addStretch(1);
 
     audioPanelLayout->addWidget(audioMetaCard, 1, Qt::AlignVCenter);
@@ -170,71 +170,23 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     mediaInfoLabel = new QLabel(mediaPage);
     mediaInfoLabel->setAlignment(Qt::AlignCenter);
     mediaInfoLabel->setWordWrap(true);
-    mediaInfoLabel->setStyleSheet("QLabel { color: #aeb4bf; font-size: 12px; }");
+    mediaInfoLabel->setStyleSheet("QLabel { color: #bdbdbd; }");
     mediaLayout->addWidget(mediaInfoLabel);
 
-    auto *controlsShell = new QWidget(mediaPage);
-    controlsShell->setObjectName("mediaControlsShell");
-    controlsShell->setStyleSheet(
-        "#mediaControlsShell { background-color: rgba(34, 37, 43, 220); border: 1px solid #4a515e; border-radius: 13px; }"
-        "QToolButton { color: #e7ebf2; background: transparent; border: none; border-radius: 8px; padding: 4px; }"
-        "QToolButton:hover { background-color: rgba(255,255,255,20); }"
-        "QToolButton:pressed { background-color: rgba(255,255,255,32); }"
-        "QSlider::groove:horizontal { border: none; height: 4px; background: #586173; border-radius: 2px; }"
-        "QSlider::sub-page:horizontal { background: #b7c2d8; border-radius: 2px; }"
-        "QSlider::handle:horizontal { background: #f3f5fa; border: 1px solid #8590a6; width: 12px; margin: -5px 0; border-radius: 6px; }"
+    auto *controlsLayout = new QHBoxLayout;
+    mediaPlayPauseButton = new QPushButton("Pause", mediaPage);
+    mediaPlayPauseButton->setMinimumWidth(80);
+    mediaPlayPauseButton->setStyleSheet(
+        "QPushButton { background-color: #2d333d; color: #e7eaf0; border: 1px solid #47505f; border-radius: 6px; padding: 4px 10px; }"
+        "QPushButton:hover { background-color: #353d49; }"
     );
-    auto *controlsLayout = new QHBoxLayout(controlsShell);
-    controlsLayout->setContentsMargins(12, 8, 12, 8);
-    controlsLayout->setSpacing(6);
-
-    mediaRewindButton = new QToolButton(controlsShell);
-    mediaRewindButton->setIcon(style()->standardIcon(QStyle::SP_MediaSeekBackward));
-    mediaRewindButton->setToolTip("Back 10 seconds");
-    mediaRewindButton->setFocusPolicy(Qt::NoFocus);
-    controlsLayout->addWidget(mediaRewindButton);
-
-    mediaPlayPauseButton = new QToolButton(controlsShell);
-    mediaPlayPauseButton->setIconSize(QSize(20, 20));
-    mediaPlayPauseButton->setToolTip("Play/Pause");
-    mediaPlayPauseButton->setFocusPolicy(Qt::NoFocus);
     controlsLayout->addWidget(mediaPlayPauseButton);
 
-    mediaForwardButton = new QToolButton(controlsShell);
-    mediaForwardButton->setIcon(style()->standardIcon(QStyle::SP_MediaSeekForward));
-    mediaForwardButton->setToolTip("Forward 10 seconds");
-    mediaForwardButton->setFocusPolicy(Qt::NoFocus);
-    controlsLayout->addWidget(mediaForwardButton);
-
-    mediaCurrentTimeLabel = new QLabel("0:00", controlsShell);
-    mediaCurrentTimeLabel->setMinimumWidth(44);
-    mediaCurrentTimeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    mediaCurrentTimeLabel->setStyleSheet("QLabel { color: #d3d9e6; font-size: 11px; }");
-    controlsLayout->addWidget(mediaCurrentTimeLabel);
-
-    mediaSeekSlider = new QSlider(Qt::Horizontal, controlsShell);
+    mediaSeekSlider = new QSlider(Qt::Horizontal, mediaPage);
     mediaSeekSlider->setRange(0, 0);
-    mediaSeekSlider->setFocusPolicy(Qt::NoFocus);
     controlsLayout->addWidget(mediaSeekSlider, 1);
+    mediaLayout->addLayout(controlsLayout);
 
-    mediaDurationLabel = new QLabel("0:00", controlsShell);
-    mediaDurationLabel->setMinimumWidth(44);
-    mediaDurationLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    mediaDurationLabel->setStyleSheet("QLabel { color: #d3d9e6; font-size: 11px; }");
-    controlsLayout->addWidget(mediaDurationLabel);
-
-    mediaMuteButton = new QToolButton(controlsShell);
-    mediaMuteButton->setToolTip("Mute");
-    mediaMuteButton->setFocusPolicy(Qt::NoFocus);
-    controlsLayout->addWidget(mediaMuteButton);
-
-    mediaVolumeSlider = new QSlider(Qt::Horizontal, controlsShell);
-    mediaVolumeSlider->setRange(0, 100);
-    mediaVolumeSlider->setFixedWidth(90);
-    mediaVolumeSlider->setFocusPolicy(Qt::NoFocus);
-    controlsLayout->addWidget(mediaVolumeSlider);
-
-    mediaLayout->addWidget(controlsShell);
     stack->addWidget(mediaPage);  // 3
 
     // Empty/unsupported
@@ -249,56 +201,18 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     audioOutput->setVolume(0.8f);
     mediaPlayer->setAudioOutput(audioOutput);
     mediaPlayer->setVideoOutput(videoWidget);
-    if (mediaVolumeSlider) {
-        mediaVolumeSlider->setValue(static_cast<int>(audioOutput->volume() * 100.0));
-    }
-    connect(audioOutput, &QAudioOutput::mutedChanged, this, [this](bool) {
-        updateMuteButtonIcon();
-    });
-    connect(audioOutput, &QAudioOutput::volumeChanged, this, [this](float volume) {
-        if (!mediaVolumeSlider) return;
-        const int sliderValue = static_cast<int>(volume * 100.0);
-        if (mediaVolumeSlider->value() != sliderValue) {
-            mediaVolumeSlider->setValue(sliderValue);
-        }
-        updateMuteButtonIcon();
-    });
-    updatePlaybackButtonIcon();
-    updateMuteButtonIcon();
 
-    connect(mediaPlayPauseButton, &QToolButton::clicked, this, &QuickLookDialog::toggleMediaPlayback);
-    connect(mediaRewindButton, &QToolButton::clicked, this, [this]() { seekRelative(-10000); });
-    connect(mediaForwardButton, &QToolButton::clicked, this, [this]() { seekRelative(10000); });
-    connect(mediaMuteButton, &QToolButton::clicked, this, [this]() {
-        if (!audioOutput) return;
-        audioOutput->setMuted(!audioOutput->isMuted());
-        updateMuteButtonIcon();
-    });
-    connect(mediaVolumeSlider, &QSlider::valueChanged, this, [this](int value) {
-        if (!audioOutput) return;
-        audioOutput->setVolume(static_cast<qreal>(value) / 100.0);
-        if (value > 0 && audioOutput->isMuted()) {
-            audioOutput->setMuted(false);
-        }
-        updateMuteButtonIcon();
-    });
+    connect(mediaPlayPauseButton, &QPushButton::clicked, this, &QuickLookDialog::toggleMediaPlayback);
     connect(mediaPlayer, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState state) {
-        Q_UNUSED(state);
-        updatePlaybackButtonIcon();
+        mediaPlayPauseButton->setText(state == QMediaPlayer::PlayingState ? "Pause" : "Play");
     });
     connect(mediaPlayer, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
         if (!mediaSeekSlider->isSliderDown()) {
             mediaSeekSlider->setValue(static_cast<int>(position));
         }
-        if (mediaCurrentTimeLabel) {
-            mediaCurrentTimeLabel->setText(formatMediaTime(position));
-        }
     });
     connect(mediaPlayer, &QMediaPlayer::durationChanged, this, [this](qint64 duration) {
         mediaSeekSlider->setRange(0, static_cast<int>(duration));
-        if (mediaDurationLabel) {
-            mediaDurationLabel->setText(formatMediaTime(duration));
-        }
     });
     connect(mediaPlayer, &QMediaPlayer::metaDataChanged, this, &QuickLookDialog::updateAudioMetadata);
     connect(mediaSeekSlider, &QSlider::sliderMoved, this, [this](int position) {
@@ -339,10 +253,8 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(escShortcut, &QShortcut::activated, this, &QDialog::close);
 
-    // Space-to-close is handled by Pane while retaining focus there; keep disabled here to avoid
-    // immediate open/close races on media previews with interactive controls.
     spaceShortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
-    spaceShortcut->setEnabled(false);
+    connect(spaceShortcut, &QShortcut::activated, this, &QDialog::close);
 
     upShortcut = new QShortcut(QKeySequence(Qt::Key_Up), this);
     connect(upShortcut, &QShortcut::activated, this, &QuickLookDialog::navigatePrevious);
@@ -350,29 +262,24 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     downShortcut = new QShortcut(QKeySequence(Qt::Key_Down), this);
     connect(downShortcut, &QShortcut::activated, this, &QuickLookDialog::navigateNext);
 
-    // YouTube-style media shortcuts while Quick Look is visible.
+    // YouTube-style transport keys.
     jShortcut = new QShortcut(QKeySequence(Qt::Key_J), this);
-    jShortcut->setContext(Qt::ApplicationShortcut);
     connect(jShortcut, &QShortcut::activated, this, [this]() {
-        if (isVisible() && mediaPlayer && mediaPlayer->duration() > 0) {
-            seekRelative(-10000);
-        }
+        if (!isVisible() || !mediaPlayer || mediaPlayer->duration() <= 0) return;
+        mediaPlayer->setPosition(std::max<qint64>(0, mediaPlayer->position() - 10000));
     });
 
     kShortcut = new QShortcut(QKeySequence(Qt::Key_K), this);
-    kShortcut->setContext(Qt::ApplicationShortcut);
     connect(kShortcut, &QShortcut::activated, this, [this]() {
-        if (isVisible() && mediaPlayer && mediaPlayer->duration() > 0) {
-            toggleMediaPlayback();
-        }
+        if (!isVisible() || !mediaPlayer || mediaPlayer->duration() <= 0) return;
+        toggleMediaPlayback();
     });
 
     lShortcut = new QShortcut(QKeySequence(Qt::Key_L), this);
-    lShortcut->setContext(Qt::ApplicationShortcut);
     connect(lShortcut, &QShortcut::activated, this, [this]() {
-        if (isVisible() && mediaPlayer && mediaPlayer->duration() > 0) {
-            seekRelative(10000);
-        }
+        if (!isVisible() || !mediaPlayer || mediaPlayer->duration() <= 0) return;
+        const qint64 duration = mediaPlayer->duration();
+        mediaPlayer->setPosition(std::min<qint64>(duration, mediaPlayer->position() + 10000));
     });
 
     connect(this, &QDialog::finished, this, [this](int) {
@@ -441,48 +348,6 @@ bool QuickLookDialog::showText(const QString &path) {
     return true;
 }
 
-QString QuickLookDialog::formatMediaTime(qint64 ms) const {
-    if (ms < 0) ms = 0;
-    const qint64 totalSeconds = ms / 1000;
-    const qint64 hours = totalSeconds / 3600;
-    const qint64 minutes = (totalSeconds % 3600) / 60;
-    const qint64 seconds = totalSeconds % 60;
-    if (hours > 0) {
-        return QString("%1:%2:%3")
-            .arg(hours)
-            .arg(minutes, 2, 10, QLatin1Char('0'))
-            .arg(seconds, 2, 10, QLatin1Char('0'));
-    }
-    return QString("%1:%2")
-        .arg(minutes)
-        .arg(seconds, 2, 10, QLatin1Char('0'));
-}
-
-void QuickLookDialog::seekRelative(qint64 deltaMs) {
-    if (!mediaPlayer) return;
-    qint64 target = mediaPlayer->position() + deltaMs;
-    if (target < 0) target = 0;
-    const qint64 duration = mediaPlayer->duration();
-    if (duration > 0 && target > duration) target = duration;
-    mediaPlayer->setPosition(target);
-}
-
-void QuickLookDialog::updatePlaybackButtonIcon() {
-    if (!mediaPlayPauseButton || !mediaPlayer) return;
-    const bool playing = mediaPlayer->playbackState() == QMediaPlayer::PlayingState;
-    mediaPlayPauseButton->setIcon(style()->standardIcon(
-        playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay
-    ));
-}
-
-void QuickLookDialog::updateMuteButtonIcon() {
-    if (!mediaMuteButton || !audioOutput) return;
-    const bool muted = audioOutput->isMuted() || audioOutput->volume() <= 0.0001;
-    mediaMuteButton->setIcon(style()->standardIcon(
-        muted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume
-    ));
-}
-
 void QuickLookDialog::setAudioArtwork(const QImage &image) {
     if (!audioArtworkLabel) return;
 
@@ -491,15 +356,15 @@ void QuickLookDialog::setAudioArtwork(const QImage &image) {
         artwork = QPixmap::fromImage(image);
     } else {
         QIcon icon = QIcon::fromTheme("audio-x-generic");
-        artwork = icon.pixmap(180, 180);
+        artwork = icon.pixmap(132, 132);
         if (artwork.isNull()) {
-            artwork = QPixmap(180, 180);
+            artwork = QPixmap(132, 132);
             artwork.fill(Qt::transparent);
             QPainter p(&artwork);
             p.setRenderHint(QPainter::Antialiasing, true);
             p.setPen(Qt::NoPen);
             p.setBrush(QColor("#d6dde8"));
-            p.drawEllipse(artwork.rect().adjusted(10, 10, -10, -10));
+            p.drawEllipse(artwork.rect().adjusted(8, 8, -8, -8));
         }
     }
 
@@ -649,14 +514,6 @@ void QuickLookDialog::stopMedia() {
         mediaSeekSlider->setRange(0, 0);
         mediaSeekSlider->setValue(0);
     }
-    if (mediaCurrentTimeLabel) {
-        mediaCurrentTimeLabel->setText("0:00");
-    }
-    if (mediaDurationLabel) {
-        mediaDurationLabel->setText("0:00");
-    }
-    updatePlaybackButtonIcon();
-    updateMuteButtonIcon();
 }
 
 void QuickLookDialog::showUnsupported(const QString &path, const QString &mime) {
@@ -721,7 +578,7 @@ void QuickLookDialog::showFile(const QString &path) {
 
     show();
     raise();
-    // Don't call activateWindow() - let main window keep focus so arrow keys work
+    activateWindow();
 }
 
 void QuickLookDialog::navigateNext() {
