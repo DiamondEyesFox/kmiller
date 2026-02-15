@@ -17,7 +17,7 @@ else()
   if(_GITVER)
     set(_VER "${_GITVER}")
   else()
-    set(_VER "5.25.1")  # release fallback
+    set(_VER "5.25.2")  # release fallback
   endif()
 endif()
 
@@ -27,7 +27,7 @@ string(REGEX MATCH "^[0-9]+(\\.[0-9]+){0,2}" _VER_SEMVER "${_VER}")
 if(_VER_SEMVER)
   set(_VER "${_VER_SEMVER}")
 else()
-  set(_VER "5.25.1")
+  set(_VER "5.25.2")
 endif()
 
 project(KMiller VERSION ${_VER} LANGUAGES CXX)
