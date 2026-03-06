@@ -15,6 +15,7 @@ public:
     explicit MillerView(QWidget *parent = nullptr);
     void setRootUrl(const QUrl &url);
     void setShowHiddenFiles(bool show);
+    void setSort(int column, Qt::SortOrder order);
     void focusLastColumn();
     QList<QUrl> getSelectedUrls() const;
     void renameSelected();
@@ -48,4 +49,8 @@ private:
     QPointer<QListView> m_renameClickView;
     QPersistentModelIndex m_renameClickIndex;
     QElapsedTimer m_renameClickTimer;
+
+    // Sort state kept in sync with Pane sort actions.
+    int m_sortColumn = 0;
+    Qt::SortOrder m_sortOrder = Qt::AscendingOrder;
 };

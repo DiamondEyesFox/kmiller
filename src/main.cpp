@@ -4,6 +4,7 @@
 #include <QCommandLineParser>
 #include <QCommandLineOption>
 #include <QDebug>
+#include <QGuiApplication>
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
@@ -23,7 +24,21 @@ int main(int argc, char *argv[]) {
     );
     parser.addOption(portalOption);
 
+    QCommandLineOption appIdOption(
+        QStringList() << "app-id",
+        "Override the Wayland app id / desktop file name for this instance.",
+        "app-id"
+    );
+    parser.addOption(appIdOption);
+
     parser.process(app);
+
+    if (parser.isSet(appIdOption)) {
+        const QString appId = parser.value(appIdOption).trimmed();
+        if (!appId.isEmpty()) {
+            QGuiApplication::setDesktopFileName(appId);
+        }
+    }
 
     if (parser.isSet(portalOption)) {
         // Portal mode: register D-Bus service and wait for requests

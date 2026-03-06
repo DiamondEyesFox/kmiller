@@ -13,9 +13,12 @@
 #include <QMimeData>
 #include <QMimeDatabase>
 #include <QProcess>
+#include <QSignalBlocker>
 #include <QSettings>
 #include <QTimer>
 #include <QStandardPaths>
+#include <functional>
+#include <memory>
 
 // Qt GUI
 #include <QClipboard>
@@ -56,7 +59,9 @@
 #include <KDirModel>
 #include <KDirSortFilterProxyModel>
 #include <KFileItem>
+#include <KJob>
 #include <KIO/ApplicationLauncherJob>
+#include <KIO/CopyJob>
 #include <KService>
 #include <KUrlNavigator>
 
@@ -203,6 +208,9 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     root->addWidget(tb);
 
     nav = new KUrlNavigator(this);
+    // Finder-like default: always start in clickable breadcrumb mode.
+    nav->setUrlEditable(false);
+    nav->setShowFullPath(true);
     root->addWidget(nav);
 
     // Splitter: left = stacked views, right = preview
@@ -334,7 +342,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     for (QAbstractItemView* v : { static_cast<QAbstractItemView*>(iconView), static_cast<QAbstractItemView*>(detailsView), static_cast<QAbstractItemView*>(compactView) }) {
         if (!v) continue;
         auto *sc = new QShortcut(QKeySequence::SelectAll, v);
-        connect(sc, &QShortcut::activated, v, [v]{ if (v->selectionModel()) v->selectionModel()->select(QModelIndex(), QItemSelectionModel::Select | QItemSelectionModel::Rows); });
+        connect(sc, &QShortcut::activated, v, [v]{ v->selectAll(); });
     }
     // Miller: multi-item context menu + Quick Look
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
@@ -347,7 +355,11 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
             ql->showFile(url.toLocalFile());
         }
     });
-    connect(miller, &MillerView::navigatedTo, this, [this](const QUrl &url){ emit urlChanged(url); });
+    connect(miller, &MillerView::navigatedTo, this, [this](const QUrl &url){
+        if (!url.isValid()) return;
+        syncNavigatorLocation(url);
+        emit urlChanged(url);
+    });
 
     ql = new QuickLookDialog(this);
     thumbs = new ThumbCache(this);
@@ -355,6 +367,15 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     connect(viewBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &Pane::onViewModeChanged);
     connect(zoom, &QSlider::valueChanged, this, &Pane::onZoomChanged);
     connect(nav, &KUrlNavigator::urlChanged, this, &Pane::onNavigatorUrlChanged);
+    connect(nav, &KUrlNavigator::editableStateChanged, this, [this](bool editable) {
+        // Keep Finder-style behavior: breadcrumb segments stay visible/clickable.
+        if (!editable || !nav) return;
+        QTimer::singleShot(0, this, [this]() {
+            if (nav && nav->isUrlEditable()) {
+                nav->setUrlEditable(false);
+            }
+        });
+    });
     
     // Search/filter functionality
     connect(searchBox, &QLineEdit::textChanged, this, [this](const QString &text){
@@ -370,18 +391,18 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
         v->setSelectionMode(QAbstractItemView::ExtendedSelection); // Enable multiselect like Miller view
         connect(v, &QWidget::customContextMenuRequested, this, [this, v](const QPoint &pos){
             QModelIndex index = v->indexAt(pos);
-            if (index.isValid()) {
-                // Finder-like behavior: right-click an unselected item to act on that item.
-                if (QItemSelectionModel *sel = v->selectionModel();
-                    sel && !sel->isSelected(index)) {
+                if (index.isValid()) {
+                    // Finder-like behavior: right-click an unselected item to act on that item.
+                    if (QItemSelectionModel *sel = v->selectionModel();
+                        sel && !sel->isSelected(index)) {
                     sel->select(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
                     v->setCurrentIndex(index);
+                    }
+                    showContextMenu(v->viewport()->mapToGlobal(pos));
+                } else {
+                    showEmptySpaceContextMenu(v->viewport()->mapToGlobal(pos));
                 }
-                showContextMenu(v->viewport()->mapToGlobal(pos));
-            } else {
-                showEmptySpaceContextMenu(pos);
-            }
-        });
+            });
         connect(v->selectionModel(), &QItemSelectionModel::currentChanged,
                 this, &Pane::onCurrentChanged);
         connect(v->selectionModel(), &QItemSelectionModel::selectionChanged,
@@ -456,11 +477,17 @@ void Pane::setRoot(const QUrl &url) {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
     if (miller) miller->setRootUrl(url);
-    if (nav && nav->locationUrl() != url) nav->setLocationUrl(url);
+    syncNavigatorLocation(url);
     emit urlChanged(url);
 }
 
 void Pane::setUrl(const QUrl &url) { setRoot(url); }
+
+void Pane::syncNavigatorLocation(const QUrl &url) {
+    if (!nav || nav->locationUrl() == url) return;
+    const QSignalBlocker blocker(nav);
+    nav->setLocationUrl(url);
+}
 
 void Pane::setViewMode(int idx) {
     if (!stack) return;
@@ -505,7 +532,11 @@ int Pane::currentViewMode() const {
     return stack ? stack->currentIndex() : 0;
 }
 void Pane::onZoomChanged(int val) { applyIconSize(val); }
-void Pane::onNavigatorUrlChanged(const QUrl &url) { setRoot(url); }
+void Pane::onNavigatorUrlChanged(const QUrl &url) {
+    setRoot(url);
+    // Breadcrumb clicks should hand focus back to the active file view so arrows work.
+    QTimer::singleShot(0, this, [this]() { focusView(); });
+}
 
 void Pane::applyIconSize(int px) { if (iconView) iconView->setIconSize(QSize(px,px)); }
 
@@ -608,10 +639,12 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
         if (!folderIcon.isNull()) {
             previewImage->setPixmap(folderIcon);
         }
-        
+
+        const QString displayName = fi.fileName().isEmpty() ? path : fi.fileName();
+        const int itemCount = QDir(path).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).size();
         previewText->setPlainText(QString("%1\n%2 items")
-                                  .arg(fi.fileName().isEmpty() ? path : fi.fileName())
-                                  .arg(QDir(path).entryList(QDir::NoDotAndDotDot|QDir::AllEntries).size()));
+                                  .arg(displayName)
+                                  .arg(itemCount));
         return;
     }
 
@@ -892,19 +925,10 @@ void Pane::showHeaderContextMenu(const QPoint &pos) {
 }
 
 void Pane::showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder) {
-    // For miller view, pos is already global; for other views, it's local
-    auto *view = qobject_cast<QAbstractItemView*>(sender());
     QPoint globalPos = pos;
 
     // Determine paste destination - use targetFolder if provided, otherwise currentRoot
     QUrl pasteDestination = targetFolder.isValid() ? targetFolder : currentRoot;
-
-    // Check if this is from a regular view (not miller)
-    if (view) {
-        QModelIndex index = view->indexAt(pos);
-        if (index.isValid()) return; // Clicked on an item, don't show empty space menu
-        globalPos = view->mapToGlobal(pos);
-    }
 
     QMenu menu(this);
 
@@ -1230,7 +1254,7 @@ void Pane::goBack() {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
     if (miller) miller->setRootUrl(url);
-    if (nav && nav->locationUrl() != url) nav->setLocationUrl(url);
+    syncNavigatorLocation(url);
 }
 
 void Pane::goForward() {
@@ -1245,7 +1269,7 @@ void Pane::goForward() {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
     if (miller) miller->setRootUrl(url);
-    if (nav && nav->locationUrl() != url) nav->setLocationUrl(url);
+    syncNavigatorLocation(url);
 }
 
 bool Pane::canGoBack() const {
@@ -1491,19 +1515,53 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     QMimeType mimeType = db.mimeTypeForFile(filePath);
     QString mimeTypeName = mimeType.name();
 
-    // Create dialog
-    QDialog dialog(this);
-    dialog.setWindowTitle(QString("Open %1 with...").arg(fi.fileName()));
-    dialog.setModal(true);
-    dialog.resize(450, 350);
+    auto *dialog = new QDialog(
+        nullptr,
+        Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint
+    );
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setWindowTitle(QString("Open %1 with...").arg(fi.fileName()));
+    dialog->setModal(true);
+    dialog->setWindowModality(Qt::ApplicationModal);
+    dialog->setFixedSize(520, 420);
+    dialog->setStyleSheet(
+        "QDialog { "
+            "background-color: rgba(42, 44, 49, 235); "
+            "color: #e8eaed; "
+            "border: 1px solid rgba(95, 102, 114, 200); "
+            "border-radius: 12px; "
+        "}"
+        "QLabel { color: #e8eaed; background: transparent; }"
+        "QListWidget { "
+            "background-color: rgba(34, 36, 41, 240); "
+            "color: #f5f7fa; "
+            "border: 1px solid #6f7785; "
+            "border-radius: 6px; "
+            "outline: none; "
+        "}"
+        "QListWidget::item { padding: 6px 8px; }"
+        "QListWidget::item:selected { "
+            "background-color: rgba(74, 144, 226, 210); "
+            "color: #f5f7fa; "
+        "}"
+        "QPushButton { "
+            "background-color: rgba(58, 62, 68, 235); "
+            "color: #e8eaed; "
+            "border: 1px solid #6f7785; "
+            "border-radius: 6px; "
+            "padding: 4px 12px; "
+        "}"
+        "QPushButton:hover { border-color: #8bbcff; }"
+        "QPushButton:pressed { background-color: rgba(72, 77, 85, 245); }"
+    );
 
-    auto *layout = new QVBoxLayout(&dialog);
+    auto *layout = new QVBoxLayout(dialog);
 
-    auto *label = new QLabel(QString("Choose an application to open <b>%1</b>:").arg(fi.fileName()));
+    auto *label = new QLabel(QString("Choose an application to open <b>%1</b>:").arg(fi.fileName()), dialog);
     label->setWordWrap(true);
     layout->addWidget(label);
 
-    auto *listWidget = new QListWidget();
+    auto *listWidget = new QListWidget(dialog);
     listWidget->setIconSize(QSize(24, 24));
     layout->addWidget(listWidget);
 
@@ -1556,43 +1614,82 @@ void Pane::showOpenWithDialog(const QUrl &url) {
         listWidget->setCurrentRow(0);
     }
 
-    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Open | QDialogButtonBox::Cancel);
-    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Open | QDialogButtonBox::Cancel, dialog);
     layout->addWidget(buttonBox);
 
-    connect(listWidget, &QListWidget::itemDoubleClicked, &dialog, &QDialog::accept);
-
-    if (dialog.exec() == QDialog::Accepted) {
+    auto runSelection = [this, dialog, listWidget, filePath, fi, url]() {
         auto *selectedItem = listWidget->currentItem();
-        if (!selectedItem) return;
+        if (!selectedItem) {
+            dialog->close();
+            return;
+        }
 
         QString appId = selectedItem->data(Qt::UserRole).toString();
 
         if (appId == "custom") {
-            // Show input dialog for custom command
+            dialog->close();
+
             bool ok;
-            QString customCommand = QInputDialog::getText(&dialog, "Custom Command",
-                                                        "Enter command to open file with:",
-                                                        QLineEdit::Normal, "", &ok);
-            if (ok && !customCommand.isEmpty()) {
-                QStringList arguments;
-                arguments << filePath;
-                if (!QProcess::startDetached(customCommand, arguments)) {
-                    QMessageBox::warning(this, "Error",
-                                        QString("Failed to open file with %1").arg(customCommand));
+            QString customCommand = QInputDialog::getText(
+                this,
+                "Custom Command",
+                "Enter command to open file with:",
+                QLineEdit::Normal,
+                "",
+                &ok
+            );
+            if (!ok || customCommand.isEmpty()) {
+                return;
+            }
+
+            QStringList parts = QProcess::splitCommand(customCommand);
+            if (parts.isEmpty()) {
+                QMessageBox::warning(this, "Error", QString("Invalid command: %1").arg(customCommand));
+                return;
+            }
+
+            QString program = parts.takeFirst();
+            bool injectedPath = false;
+            for (QString &arg : parts) {
+                if (arg == "%f" || arg == "%F") {
+                    arg = filePath;
+                    injectedPath = true;
+                } else if (arg == "%u" || arg == "%U") {
+                    arg = url.toString();
+                    injectedPath = true;
                 }
             }
-        } else {
-            // Use KDE's application launcher for proper integration
-            KService::Ptr service = selectedItem->data(Qt::UserRole + 1).value<KService::Ptr>();
-            if (service) {
-                auto *job = new KIO::ApplicationLauncherJob(service);
-                job->setUrls({url});
-                job->start();
+            if (!injectedPath) {
+                parts << filePath;
             }
+
+            if (!QProcess::startDetached(program, parts)) {
+                QMessageBox::warning(this, "Error", QString("Failed to open file with %1").arg(customCommand));
+            }
+            return;
         }
-    }
+
+        KService::Ptr service = selectedItem->data(Qt::UserRole + 1).value<KService::Ptr>();
+        dialog->close();
+        if (service) {
+            auto *job = new KIO::ApplicationLauncherJob(service);
+            job->setUrls({url});
+            job->start();
+        }
+    };
+
+    connect(buttonBox, &QDialogButtonBox::accepted, dialog, runSelection);
+    connect(buttonBox, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    connect(listWidget, &QListWidget::itemDoubleClicked, dialog, runSelection);
+
+    const QRect parentFrame = window()->frameGeometry();
+    const QPoint centeredTopLeft = parentFrame.center()
+        - QPoint(dialog->width() / 2, dialog->height() / 2);
+    dialog->move(centeredTopLeft);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+    listWidget->setFocus(Qt::OtherFocusReason);
 }
 
 void Pane::compressSelected() {
@@ -1744,28 +1841,29 @@ void Pane::extractArchive(const QUrl &archiveUrl) {
 void Pane::duplicateSelected() {
     QList<QUrl> urls = getSelectedUrls();
     if (urls.isEmpty()) return;
-    
-    QString currentDir = currentRoot.toLocalFile();
-    
+
+    QList<QPair<QUrl, QUrl>> duplicateOps;
+    duplicateOps.reserve(urls.size());
+
     for (const QUrl &url : urls) {
         if (!url.isLocalFile()) continue;
-        
+
         QString sourcePath = url.toLocalFile();
         QFileInfo fi(sourcePath);
-        
+
         // Generate unique name for duplicate
         QString baseName = fi.completeBaseName();
         QString extension = fi.suffix();
         QString duplicateName;
-        
+
         if (extension.isEmpty()) {
             duplicateName = QString("%1 copy").arg(baseName);
         } else {
             duplicateName = QString("%1 copy.%2").arg(baseName).arg(extension);
         }
-        
+
         QString duplicatePath = fi.absolutePath() + "/" + duplicateName;
-        
+
         // If "copy" version exists, add numbers
         int counter = 1;
         while (QFile::exists(duplicatePath)) {
@@ -1777,53 +1875,92 @@ void Pane::duplicateSelected() {
             }
             duplicatePath = fi.absolutePath() + "/" + duplicateName;
         }
-        
-        // Perform the duplication
-        bool success = false;
-        if (fi.isDir()) {
-            // For directories, use cp -r command
-            QProcess *process = new QProcess(this);
-            QStringList arguments;
-            arguments << "-r" << sourcePath << duplicatePath;
-            
-            process->start("cp", arguments);
-            success = process->waitForFinished(10000) && process->exitCode() == 0;
-            process->deleteLater();
-        } else {
-            // For files, use QFile::copy
-            success = QFile::copy(sourcePath, duplicatePath);
-        }
-        
-        if (!success) {
-            QMessageBox::warning(this, "Duplicate Failed",
-                                QString("Failed to duplicate '%1'.").arg(fi.fileName()));
+
+        duplicateOps.append({QUrl::fromLocalFile(sourcePath), QUrl::fromLocalFile(duplicatePath)});
+    }
+
+    if (duplicateOps.isEmpty()) {
+        return;
+    }
+
+    struct DuplicateState {
+        QList<QPair<QUrl, QUrl>> ops;
+        int index = 0;
+        int failures = 0;
+        QString firstError;
+    };
+    auto state = std::make_shared<DuplicateState>();
+    state->ops = duplicateOps;
+
+    auto runNext = std::make_shared<std::function<void()>>();
+    *runNext = [this, state, runNext]() {
+        if (state->index >= state->ops.size()) {
+            if (auto *l = dirModel->dirLister()) {
+                l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
+            }
+
+            const int successCount = state->ops.size() - state->failures;
+            if (state->failures == 0) {
+                QMessageBox::information(this, "Duplicate Complete",
+                    QString("Successfully duplicated %1 item(s).").arg(successCount));
+            } else {
+                QMessageBox::warning(this, "Duplicate Completed With Errors",
+                    QString("Duplicated %1 of %2 item(s).\n\nFirst error: %3")
+                        .arg(successCount)
+                        .arg(state->ops.size())
+                        .arg(state->firstError.isEmpty() ? QString("Unknown error") : state->firstError));
+            }
             return;
         }
-    }
-    
-    // Refresh the directory listing to show new duplicates
-    if (auto *l = dirModel->dirLister()) {
-        l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
-    }
-    
-    QMessageBox::information(this, "Duplicate Complete",
-                           QString("Successfully duplicated %1 item(s).").arg(urls.size()));
+
+        const auto op = state->ops.at(state->index++);
+        KIO::CopyJob *job = KIO::copyAs(op.first, op.second, KIO::HideProgressInfo);
+        connect(job, &KJob::result, this, [state, runNext](KJob *finishedJob) {
+            if (finishedJob->error()) {
+                state->failures++;
+                if (state->firstError.isEmpty()) {
+                    state->firstError = finishedJob->errorString();
+                }
+            }
+            (*runNext)();
+        });
+    };
+
+    (*runNext)();
 }
 
 void Pane::setSortCriteria(int criteria) {
     if (!proxy) return;
     
-    int column = 0;
+    int proxyColumn = 0;
+    int millerColumn = 0;
     switch (criteria) {
-        case 0: column = 0; break; // Name
-        case 1: column = 1; break; // Size  
-        case 2: column = 6; break; // Type
-        case 3: column = 2; break; // Date Modified
-        default: column = 0; break;
+        case 0: // Name
+            proxyColumn = 0;
+            millerColumn = 0;
+            break;
+        case 1: // Size
+            proxyColumn = 1;
+            millerColumn = 1;
+            break;
+        case 2: // Type
+            proxyColumn = 6;
+            millerColumn = 2;
+            break;
+        case 3: // Date Modified
+            proxyColumn = 2;
+            millerColumn = 3;
+            break;
+        default:
+            proxyColumn = 0;
+            millerColumn = 0;
+            break;
     }
     
-    proxy->setSortRole(Qt::DisplayRole);
-    proxy->sort(column, proxy->sortOrder());
+    proxy->sort(proxyColumn, proxy->sortOrder());
+    if (miller) {
+        miller->setSort(millerColumn, proxy->sortOrder());
+    }
 }
 
 void Pane::setSortOrder(Qt::SortOrder order) {
@@ -1833,4 +1970,19 @@ void Pane::setSortOrder(Qt::SortOrder order) {
     if (currentColumn < 0) currentColumn = 0; // Default to name
     
     proxy->sort(currentColumn, order);
+
+    int millerColumn = 0;
+    switch (currentColumn) {
+        case 1: millerColumn = 1; break; // Size
+        case 6: millerColumn = 2; break; // Type
+        case 2: millerColumn = 3; break; // Date Modified
+        case 0:
+        default:
+            millerColumn = 0; // Name
+            break;
+    }
+
+    if (miller) {
+        miller->setSort(millerColumn, order);
+    }
 }

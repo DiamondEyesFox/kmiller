@@ -223,10 +223,10 @@ void MillerView::addColumn(const QUrl &url) {
 
     // When directory loads, trigger sort
     connect(model, &QFileSystemModel::directoryLoaded, this,
-        [mptr, rootPath](const QString &loaded){
+        [this, mptr, rootPath](const QString &loaded){
             if (!mptr) return;
             if (loaded == rootPath) {
-                mptr->sort(0, Qt::AscendingOrder);
+                mptr->sort(m_sortColumn, m_sortOrder);
             }
         }
     );
@@ -413,8 +413,30 @@ void MillerView::typeToSelect(QListView *view, const QString &text) {
 }
 
 void MillerView::focusLastColumn() {
-    if (!columns.isEmpty()) {
-        columns.last()->setFocus();
+    if (columns.isEmpty()) return;
+
+    QListView *last = columns.last();
+    if (!last) return;
+
+    last->setFocus(Qt::OtherFocusReason);
+
+    auto *model = qobject_cast<QFileSystemModel*>(last->model());
+    if (!model) return;
+
+    QModelIndex current = last->currentIndex();
+    if (!current.isValid()) {
+        QModelIndex root = last->rootIndex();
+        if (model->rowCount(root) > 0) {
+            current = model->index(0, 0, root);
+            last->setCurrentIndex(current);
+            last->scrollTo(current, QAbstractItemView::PositionAtTop);
+        }
+    }
+
+    if (current.isValid()) {
+        if (QItemSelectionModel *sel = last->selectionModel()) {
+            sel->select(current, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        }
     }
 }
 
@@ -475,6 +497,17 @@ void MillerView::setShowHiddenFiles(bool show) {
                 filters |= QDir::Hidden;
             }
             model->setFilter(filters);
+        }
+    }
+}
+
+void MillerView::setSort(int column, Qt::SortOrder order) {
+    m_sortColumn = column;
+    m_sortOrder = order;
+
+    for (QListView *view : columns) {
+        if (auto *model = qobject_cast<QFileSystemModel*>(view->model())) {
+            model->sort(m_sortColumn, m_sortOrder);
         }
     }
 }

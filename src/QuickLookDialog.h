@@ -30,6 +30,7 @@ private:
     void showImage(const QString &path);
     void showPdf(const QString &path);
     bool showText(const QString &path);
+    void showDirectory(const QString &path);
     void showMedia(const QString &path, bool isVideo);
     void stopMedia();
     void showUnsupported(const QString &path, const QString &mime);
@@ -59,10 +60,20 @@ private:
     QLabel *audioArtistLabel = nullptr;
     QLabel *audioAlbumLabel = nullptr;
     QLabel *audioYearLabel = nullptr;
+    QWidget *folderPage = nullptr;
+    QLabel *folderIconLabel = nullptr;
+    QLabel *folderNameLabel = nullptr;
+    QLabel *folderInfoLabel = nullptr;
+    QLabel *folderPathLabel = nullptr;
     QLabel *mediaInfoLabel = nullptr;
+    QLabel *mediaCurrentTimeLabel = nullptr;
+    QLabel *mediaTotalTimeLabel = nullptr;
     QPushButton *mediaPlayPauseButton = nullptr;
+    QPushButton *mediaMuteButton = nullptr;
     QSlider *mediaSeekSlider = nullptr;
+    QSlider *mediaVolumeSlider = nullptr;
     QUrl activeMediaSource;
     bool activeMediaIsVideo = false;
     bool retriedVideoWithoutAudio = false;
+    quint64 m_directorySizeRequestId = 0;
 };

@@ -17,7 +17,7 @@ else()
   if(_GITVER)
     set(_VER "${_GITVER}")
   else()
-    set(_VER "5.25.2")  # release fallback
+    set(_VER "5.25.3")  # release fallback
   endif()
 endif()
 
@@ -27,7 +27,7 @@ string(REGEX MATCH "^[0-9]+(\\.[0-9]+){0,2}" _VER_SEMVER "${_VER}")
 if(_VER_SEMVER)
   set(_VER "${_VER_SEMVER}")
 else()
-  set(_VER "5.25.2")
+  set(_VER "5.25.3")
 endif()
 
 project(KMiller VERSION ${_VER} LANGUAGES CXX)
@@ -44,7 +44,7 @@ set(CMAKE_AUTOUIC ON)
 find_package(ECM REQUIRED NO_MODULE)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets DBus)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets DBus Concurrent)
 find_package(KF6KIO REQUIRED)               # provides KF6::KIOCore/KIOWidgets/KIOFileWidgets
 find_package(Poppler REQUIRED COMPONENTS Qt6)
 
@@ -80,6 +80,7 @@ target_link_libraries(kmiller
     Qt6::Multimedia
     Qt6::MultimediaWidgets
     Qt6::DBus
+    Qt6::Concurrent
     KF6::KIOCore
     KF6::KIOWidgets
     KF6::KIOFileWidgets

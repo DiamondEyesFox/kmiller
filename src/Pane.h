@@ -101,6 +101,7 @@ protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
 
 private:
+    void syncNavigatorLocation(const QUrl &url);
     void applyIconSize(int px);
     QUrl urlForIndex(const QModelIndex &proxyIndex) const;
     QList<QUrl> getSelectedUrls() const;
@@ -162,4 +163,5 @@ private:
     QPointer<QAbstractItemView> m_renameClickView;
     QPersistentModelIndex m_renameClickIndex;
     QElapsedTimer m_renameClickTimer;
+
 };

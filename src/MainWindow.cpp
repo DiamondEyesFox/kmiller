@@ -27,6 +27,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QShortcut>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QVBoxLayout>
@@ -261,7 +262,11 @@ void MainWindow::buildMenus() {
     go->addAction("Open Selection", [this]{ if (auto p=currentPane()) p->openSelected(); })->setShortcut(QKeySequence("Ctrl+Down"));
     go->addAction("Home", [this]{ if (auto p=currentPane()) p->goHome(); });
     go->addSeparator();
-    go->addAction("Go to Folder…", [this]{ goToFolder(); })->setShortcut(QKeySequence("Ctrl+Shift+G"));
+    auto *actGoToFolder = go->addAction("Go to Folder…", [this]{ goToFolder(); });
+    actGoToFolder->setShortcuts({
+        QKeySequence("Ctrl+Shift+G"),
+        QKeySequence("Ctrl+L"),
+    });
     
     go->addSeparator();
     
@@ -507,7 +512,25 @@ void MainWindow::applyTheme(int theme) {
     
     switch (theme) {
         case 0: // Default
-            setStyleSheet("");
+            // Keep native look, but force readable pathbar contrast.
+            styleSheet =
+                "KUrlNavigator { "
+                    "background-color: #f7f7f7; color: #111111; "
+                    "border: 1px solid #c8c8c8; border-radius: 6px; "
+                    "padding: 2px 4px; "
+                "}"
+                "KUrlNavigator QToolButton, KUrlNavigator QPushButton, KUrlNavigator QAbstractButton { "
+                    "color: #111111; border: 1px solid #d0d5dc; background: #edf1f5; "
+                    "border-radius: 10px; padding: 2px 8px; margin: 1px; "
+                "}"
+                "KUrlNavigator QToolButton:hover, KUrlNavigator QPushButton:hover, KUrlNavigator QAbstractButton:hover { background-color: #e3e9f0; }"
+                "KUrlNavigator QToolButton:pressed, KUrlNavigator QPushButton:pressed, KUrlNavigator QAbstractButton:pressed { background-color: #d7e0ea; }"
+                "KUrlNavigator QLineEdit { "
+                    "background-color: #ffffff; color: #111111; "
+                    "border: 1px solid #c8c8c8; border-radius: 4px; "
+                    "padding: 2px 6px; "
+                "}";
+            setStyleSheet(styleSheet);
             break;
             
         case 1: // Dark
@@ -529,7 +552,12 @@ void MainWindow::applyTheme(int theme) {
                 "QTabBar::tab { background-color: #3c3c3c; color: #ffffff; padding: 4px 8px; }"
                 "QTabBar::tab:selected { background-color: #555555; }"
                 "KUrlNavigator { background-color: #3c3c3c; color: #ffffff; }"
-                "KUrlNavigator QToolButton { color: #ffffff; }"
+                "KUrlNavigator QToolButton, KUrlNavigator QPushButton, KUrlNavigator QAbstractButton { "
+                    "color: #f3f3f3; border: 1px solid #5b5b5b; background: #4a4a4a; "
+                    "border-radius: 10px; padding: 2px 8px; margin: 1px; "
+                "}"
+                "KUrlNavigator QToolButton:hover, KUrlNavigator QPushButton:hover, KUrlNavigator QAbstractButton:hover { background-color: #585858; }"
+                "KUrlNavigator QToolButton:pressed, KUrlNavigator QPushButton:pressed, KUrlNavigator QAbstractButton:pressed { background-color: #666666; }"
                 "KUrlNavigator QLineEdit { background-color: #3c3c3c; color: #ffffff; }"
                 "QScrollBar:vertical, QAbstractScrollArea QScrollBar:vertical { "
                     "background-color: transparent; width: 12px; "
@@ -570,6 +598,11 @@ void MainWindow::applyTheme(int theme) {
                 "QTreeView, QListView { background-color: #ffffff; color: #000000; alternate-background-color: #f5f5f5; }"
                 "QHeaderView::section { background-color: #e0e0e0; color: #000000; }"
                 "QComboBox, QLineEdit { background-color: #ffffff; color: #000000; }"
+                "KUrlNavigator { background-color: #ffffff; color: #000000; border: 1px solid #d9d9d9; border-radius: 6px; }"
+                "KUrlNavigator QToolButton, KUrlNavigator QPushButton, KUrlNavigator QAbstractButton { color: #000000; border: 1px solid #d0d5dc; background: #edf1f5; border-radius: 10px; padding: 2px 8px; margin: 1px; }"
+                "KUrlNavigator QToolButton:hover, KUrlNavigator QPushButton:hover, KUrlNavigator QAbstractButton:hover { background-color: #e3e9f0; }"
+                "KUrlNavigator QToolButton:pressed, KUrlNavigator QPushButton:pressed, KUrlNavigator QAbstractButton:pressed { background-color: #d7e0ea; }"
+                "KUrlNavigator QLineEdit { background-color: #ffffff; color: #000000; border: 1px solid #d9d9d9; border-radius: 4px; }"
                 "QTabWidget::pane { background-color: #ffffff; }"
                 "QTabBar::tab { background-color: #e0e0e0; color: #000000; }"
                 "QTabBar::tab:selected { background-color: #ffffff; }";
@@ -623,6 +656,22 @@ void MainWindow::applyTheme(int theme) {
                     "padding: 4px 8px; "
                 "}"
                 "QLineEdit:focus { border-color: #007aff; }"
+                "KUrlNavigator { "
+                    "background-color: #ffffff; color: #000000; "
+                    "border: 1px solid #d1d1d1; border-radius: 6px; "
+                    "padding: 2px 4px; "
+                "}"
+                "KUrlNavigator QToolButton, KUrlNavigator QPushButton, KUrlNavigator QAbstractButton { "
+                    "color: #000000; border: 1px solid #d0d5dc; background: #edf1f5; "
+                    "border-radius: 10px; padding: 2px 8px; margin: 1px; "
+                "}"
+                "KUrlNavigator QToolButton:hover, KUrlNavigator QPushButton:hover, KUrlNavigator QAbstractButton:hover { background-color: #e3e9f0; }"
+                "KUrlNavigator QToolButton:pressed, KUrlNavigator QPushButton:pressed, KUrlNavigator QAbstractButton:pressed { background-color: #d7e0ea; }"
+                "KUrlNavigator QLineEdit { "
+                    "background-color: #ffffff; color: #000000; "
+                    "border: 1px solid #d1d1d1; border-radius: 4px; "
+                    "padding: 2px 6px; "
+                "}"
                 "QTabWidget::pane { background-color: #ffffff; border: 1px solid #d1d1d1; border-radius: 6px; }"
                 "QTabBar::tab { "
                     "background-color: #f1f1f1; color: #000000; "
@@ -750,19 +799,49 @@ void MainWindow::showAbout() {
 }
 
 void MainWindow::goToFolder() {
-    QDialog dialog(this);
-    dialog.setWindowTitle("Go to Folder");
-    dialog.setModal(true);
-    dialog.resize(450, 120);
+    auto *dialog = new QDialog(
+        nullptr,
+        Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint
+    );
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setWindowTitle("Go to Folder");
+    dialog->setModal(true);
+    dialog->setWindowModality(Qt::ApplicationModal);
+    dialog->setFixedSize(450, 120);
+    dialog->setStyleSheet(
+        "QDialog { "
+            "background-color: rgba(42, 44, 49, 235); "
+            "color: #e8eaed; "
+            "border: 1px solid rgba(95, 102, 114, 200); "
+            "border-radius: 12px; "
+        "}"
+        "QLabel { color: #e8eaed; background: transparent; }"
+        "QLineEdit { "
+            "background-color: rgba(74, 78, 86, 240); "
+            "color: #f5f7fa; "
+            "border: 1px solid #6f7785; "
+            "border-radius: 6px; "
+            "padding: 4px 8px; "
+            "selection-background-color: #4a90e2; "
+        "}"
+        "QLineEdit:focus { border-color: #6db3ff; }"
+        "QPushButton { "
+            "background-color: rgba(58, 62, 68, 235); "
+            "color: #e8eaed; "
+            "border: 1px solid #6f7785; "
+            "border-radius: 6px; "
+            "padding: 4px 12px; "
+        "}"
+        "QPushButton:hover { border-color: #8bbcff; }"
+        "QPushButton:pressed { background-color: rgba(72, 77, 85, 245); }"
+    );
+    auto *layout = new QVBoxLayout(dialog);
 
-    auto *layout = new QVBoxLayout(&dialog);
-
-    auto *label = new QLabel("Enter the path to a folder:");
+    auto *label = new QLabel("Enter the path to a folder:", dialog);
     layout->addWidget(label);
 
-    auto *lineEdit = new QLineEdit();
+    auto *lineEdit = new QLineEdit(dialog);
     lineEdit->setPlaceholderText("/path/to/folder");
-    // Start with current directory
     if (auto *p = currentPane()) {
         lineEdit->setText(p->currentUrl().toLocalFile());
     } else {
@@ -771,8 +850,7 @@ void MainWindow::goToFolder() {
     lineEdit->selectAll();
     layout->addWidget(lineEdit);
 
-    // Add completer for path completion
-    auto *completer = new QCompleter(this);
+    auto *completer = new QCompleter(dialog);
     auto *fsModel = new QFileSystemModel(completer);
     fsModel->setRootPath("");
     fsModel->setFilter(QDir::AllDirs | QDir::NoDotAndDotDot);
@@ -780,19 +858,19 @@ void MainWindow::goToFolder() {
     completer->setCompletionMode(QCompleter::PopupCompletion);
     lineEdit->setCompleter(completer);
 
-    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
     layout->addWidget(buttonBox);
 
-    // Accept on Enter key
-    connect(lineEdit, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
+    auto *closeOnCtrlL = new QShortcut(QKeySequence("Ctrl+L"), dialog);
+    auto *closeOnCtrlShiftG = new QShortcut(QKeySequence("Ctrl+Shift+G"), dialog);
 
-    if (dialog.exec() == QDialog::Accepted) {
+    auto acceptPath = [this, dialog, lineEdit]() {
         QString path = lineEdit->text().trimmed();
-        if (path.isEmpty()) return;
+        if (path.isEmpty()) {
+            dialog->close();
+            return;
+        }
 
-        // Expand ~ to home directory
         if (path.startsWith("~")) {
             path = QDir::homePath() + path.mid(1);
         }
@@ -802,14 +880,30 @@ void MainWindow::goToFolder() {
             if (auto *p = currentPane()) {
                 p->setUrl(QUrl::fromLocalFile(fi.absoluteFilePath()));
             }
+            dialog->close();
         } else if (fi.exists()) {
-            // It's a file, navigate to its parent directory
             if (auto *p = currentPane()) {
                 p->setUrl(QUrl::fromLocalFile(fi.absolutePath()));
             }
+            dialog->close();
         } else {
             QMessageBox::warning(this, "Invalid Path",
                 QString("The path \"%1\" does not exist.").arg(path));
         }
-    }
+    };
+
+    connect(buttonBox, &QDialogButtonBox::accepted, dialog, acceptPath);
+    connect(buttonBox, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    connect(lineEdit, &QLineEdit::returnPressed, dialog, acceptPath);
+    connect(closeOnCtrlL, &QShortcut::activated, dialog, &QDialog::close);
+    connect(closeOnCtrlShiftG, &QShortcut::activated, dialog, &QDialog::close);
+
+    const QRect parentFrame = frameGeometry();
+    const QPoint centeredTopLeft = parentFrame.center()
+        - QPoint(dialog->width() / 2, dialog->height() / 2);
+    dialog->move(centeredTopLeft);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+    lineEdit->setFocus(Qt::OtherFocusReason);
 }

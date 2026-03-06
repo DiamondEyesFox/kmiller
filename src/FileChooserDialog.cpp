@@ -324,7 +324,15 @@ void FileChooserDialog::onAccept()
             }
 
             QFileInfo fi(url.toLocalFile());
-            if (fi.isDir() || matchesFilterPattern(fi.filePath(), fi.fileName(), patterns)) {
+            if (fi.isDir()) {
+                // Open-file mode should not accept directories unless explicitly in directory mode.
+                if (m_directoryMode) {
+                    filteredUrls.append(url);
+                }
+                continue;
+            }
+
+            if (matchesFilterPattern(fi.filePath(), fi.fileName(), patterns)) {
                 filteredUrls.append(url);
             }
         }

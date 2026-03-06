@@ -16,21 +16,75 @@
 #include <QShortcut>
 #include <QFile>
 #include <QDir>
+#include <QDirIterator>
 #include <QUrl>
 #include <QSizePolicy>
 #include <QRegularExpression>
 #include <QDate>
 #include <QDateTime>
+#include <QFutureWatcher>
 #include <QIcon>
 #include <QPainter>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QStyle>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QMediaPlayer>
 #include <QMediaMetaData>
 #include <QAudioOutput>
 #include <QVideoWidget>
 #include <poppler-qt6.h>
 #include <algorithm>
+
+static QString formatBytes(qint64 size) {
+    const QStringList units = {"bytes", "KB", "MB", "GB", "TB"};
+    double value = static_cast<double>(qMax<qint64>(0, size));
+    int unitIndex = 0;
+    while (value >= 1024.0 && unitIndex < units.size() - 1) {
+        value /= 1024.0;
+        ++unitIndex;
+    }
+
+    if (unitIndex == 0) {
+        return QString("%1 %2").arg(static_cast<qint64>(value)).arg(units[unitIndex]);
+    }
+    return QString("%1 %2").arg(value, 0, 'f', 1).arg(units[unitIndex]);
+}
+
+static qint64 computeDirectorySizeBytes(const QString &dirPath) {
+    qint64 totalSize = 0;
+    QDirIterator it(
+        dirPath,
+        QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks | QDir::Hidden | QDir::System,
+        QDirIterator::Subdirectories
+    );
+
+    while (it.hasNext()) {
+        it.next();
+        const QFileInfo fi = it.fileInfo();
+        if (fi.isFile()) {
+            totalSize += fi.size();
+        }
+    }
+    return totalSize;
+}
+
+static QString formatDurationMs(qint64 ms) {
+    if (ms <= 0) return "0:00";
+    const qint64 totalSeconds = ms / 1000;
+    const qint64 hours = totalSeconds / 3600;
+    const qint64 minutes = (totalSeconds % 3600) / 60;
+    const qint64 seconds = totalSeconds % 60;
+    if (hours > 0) {
+        return QString("%1:%2:%3")
+            .arg(hours)
+            .arg(minutes, 2, 10, QChar('0'))
+            .arg(seconds, 2, 10, QChar('0'));
+    }
+    return QString("%1:%2")
+        .arg(minutes)
+        .arg(seconds, 2, 10, QChar('0'));
+}
 
 QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(parentPane) {
     // Frameless, dark, minimal - like macOS Quick Look
@@ -41,9 +95,9 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     setModal(false);
     resize(800, 600);
 
-    // Dark background with minimal padding
+    // Finder-inspired quick-look chrome.
     setStyleSheet(
-        "QuickLookDialog { background-color: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 8px; }"
+        "QuickLookDialog { background-color: #20242b; border: 1px solid #434956; border-radius: 12px; }"
     );
 
     auto *layout = new QVBoxLayout(this);
@@ -53,39 +107,42 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     // Filename at top - subtle, small
     filenameLabel = new QLabel(this);
     filenameLabel->setAlignment(Qt::AlignCenter);
+    filenameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     filenameLabel->setStyleSheet(
-        "QLabel { color: #cccccc; background-color: #2a2a2a; padding: 6px; font-size: 12px; "
-        "border-top-left-radius: 8px; border-top-right-radius: 8px; }"
+        "QLabel { color: #eef1f6; "
+        "background-color: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #303543, stop:1 #282d39); "
+        "padding: 7px 12px; font-size: 12px; font-weight: 600; "
+        "border-top-left-radius: 12px; border-top-right-radius: 12px; border-bottom: 1px solid #3f4655; }"
     );
     layout->addWidget(filenameLabel);
 
     // Content stack
     stack = new QStackedWidget(this);
-    stack->setStyleSheet("QStackedWidget { background-color: #1e1e1e; }");
+    stack->setStyleSheet("QStackedWidget { background-color: #1f2127; }");
     layout->addWidget(stack, 1);
 
     // Image view - no scroll, just centered label
     auto *imageLabel = new QLabel;
     imageLabel->setAlignment(Qt::AlignCenter);
-    imageLabel->setStyleSheet("QLabel { background-color: #1e1e1e; }");
+    imageLabel->setStyleSheet("QLabel { background-color: #1f2127; }");
     stack->addWidget(imageLabel);  // 0
 
     // PDF view
     auto *pdfLabel = new QLabel;
     pdfLabel->setAlignment(Qt::AlignCenter);
-    pdfLabel->setStyleSheet("QLabel { background-color: #1e1e1e; }");
+    pdfLabel->setStyleSheet("QLabel { background-color: #1f2127; }");
     auto *pdfScroll = new QScrollArea;
     pdfScroll->setWidget(pdfLabel);
     pdfScroll->setWidgetResizable(true);
-    pdfScroll->setStyleSheet("QScrollArea { background-color: #1e1e1e; border: none; }");
+    pdfScroll->setStyleSheet("QScrollArea { background-color: #1f2127; border: none; }");
     stack->addWidget(pdfScroll);  // 1
 
     // Text view
     auto *textEdit = new QTextEdit;
     textEdit->setReadOnly(true);
     textEdit->setStyleSheet(
-        "QTextEdit { background-color: #1e1e1e; color: #e0e0e0; border: none; "
-        "font-family: monospace; font-size: 13px; padding: 8px; }"
+        "QTextEdit { background-color: #1f2127; color: #e5e8ed; border: none; "
+        "font-family: monospace; font-size: 13px; padding: 10px; }"
     );
     stack->addWidget(textEdit);  // 2
 
@@ -97,14 +154,14 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
 
     mediaContentStack = new QStackedWidget(mediaPage);
     mediaContentStack->setStyleSheet(
-        "QStackedWidget { background-color: #111111; border: 1px solid #3a3a3a; border-radius: 8px; }"
+        "QStackedWidget { background-color: #14161b; border: 1px solid #383c45; border-radius: 12px; }"
     );
     mediaLayout->addWidget(mediaContentStack, 1);
 
     videoWidget = new QVideoWidget(mediaContentStack);
     videoWidget->setMinimumHeight(300);
     videoWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    videoWidget->setStyleSheet("background-color: #111111; border-radius: 7px;");
+    videoWidget->setStyleSheet("background-color: #14161b; border-radius: 9px;");
     mediaContentStack->addWidget(videoWidget);
 
     audioPanel = new QWidget(mediaContentStack);
@@ -124,10 +181,10 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
 
     auto *audioMetaCard = new QWidget(audioPanel);
     audioMetaCard->setObjectName("audioMetaCard");
-    audioMetaCard->setMinimumWidth(360);
+    audioMetaCard->setMinimumWidth(0);
     audioMetaCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     audioMetaCard->setStyleSheet(
-        "#audioMetaCard { background-color: #202327; border: 1px solid #363b43; border-radius: 10px; }"
+        "#audioMetaCard { background-color: #1f2229; border: 1px solid #393d47; border-radius: 12px; }"
     );
     auto *audioMetaLayout = new QVBoxLayout(audioMetaCard);
     audioMetaLayout->setContentsMargins(20, 16, 20, 16);
@@ -138,28 +195,28 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     audioTitleLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     audioTitleLabel->setWordWrap(true);
     audioTitleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    audioTitleLabel->setStyleSheet("QLabel { color: #f2f2f2; font-size: 22px; font-weight: 700; }");
+    audioTitleLabel->setStyleSheet("QLabel { color: #f3f5f9; font-size: 22px; font-weight: 700; }");
     audioMetaLayout->addWidget(audioTitleLabel);
 
     audioArtistLabel = new QLabel(audioMetaCard);
     audioArtistLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     audioArtistLabel->setWordWrap(true);
     audioArtistLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    audioArtistLabel->setStyleSheet("QLabel { color: #a8beff; font-size: 16px; font-weight: 600; }");
+    audioArtistLabel->setStyleSheet("QLabel { color: #b6c7ff; font-size: 16px; font-weight: 600; }");
     audioMetaLayout->addWidget(audioArtistLabel);
 
     audioAlbumLabel = new QLabel(audioMetaCard);
     audioAlbumLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     audioAlbumLabel->setWordWrap(true);
     audioAlbumLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    audioAlbumLabel->setStyleSheet("QLabel { color: #c3c7cf; font-size: 14px; }");
+    audioAlbumLabel->setStyleSheet("QLabel { color: #cfd4dc; font-size: 14px; }");
     audioMetaLayout->addWidget(audioAlbumLabel);
 
     audioYearLabel = new QLabel(audioMetaCard);
     audioYearLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     audioYearLabel->setStyleSheet(
-        "QLabel { color: #d7dbe2; font-size: 12px; background-color: #2d333d; border: 1px solid #47505f; "
-        "border-radius: 10px; padding: 2px 10px; max-width: 130px; }"
+        "QLabel { color: #d7dbe2; font-size: 12px; background-color: #2c313a; border: 1px solid #47505f; "
+        "border-radius: 10px; padding: 2px 10px; }"
     );
     audioMetaLayout->addWidget(audioYearLabel, 0, Qt::AlignLeft);
     audioMetaLayout->addStretch(1);
@@ -170,21 +227,71 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     mediaInfoLabel = new QLabel(mediaPage);
     mediaInfoLabel->setAlignment(Qt::AlignCenter);
     mediaInfoLabel->setWordWrap(true);
-    mediaInfoLabel->setStyleSheet("QLabel { color: #bdbdbd; }");
+    mediaInfoLabel->setStyleSheet("QLabel { color: #bac0cb; font-size: 11px; }");
     mediaLayout->addWidget(mediaInfoLabel);
 
     auto *controlsLayout = new QHBoxLayout;
-    mediaPlayPauseButton = new QPushButton("Pause", mediaPage);
-    mediaPlayPauseButton->setMinimumWidth(80);
+    controlsLayout->setContentsMargins(4, 2, 4, 0);
+    controlsLayout->setSpacing(10);
+    mediaPlayPauseButton = new QPushButton(mediaPage);
+    mediaPlayPauseButton->setMinimumSize(36, 36);
+    mediaPlayPauseButton->setMaximumSize(36, 36);
+    mediaPlayPauseButton->setIconSize(QSize(18, 18));
+    mediaPlayPauseButton->setToolTip("Pause");
     mediaPlayPauseButton->setStyleSheet(
-        "QPushButton { background-color: #2d333d; color: #e7eaf0; border: 1px solid #47505f; border-radius: 6px; padding: 4px 10px; }"
-        "QPushButton:hover { background-color: #353d49; }"
+        "QPushButton { background-color: #303642; color: #e7eaf0; border: 1px solid #505a6d; border-radius: 18px; padding: 0px; }"
+        "QPushButton:hover { background-color: #3a4250; }"
+        "QPushButton:pressed { background-color: #444d5d; }"
     );
+    mediaPlayPauseButton->setIcon(QIcon::fromTheme("media-playback-pause", style()->standardIcon(QStyle::SP_MediaPause)));
     controlsLayout->addWidget(mediaPlayPauseButton);
+
+    mediaCurrentTimeLabel = new QLabel("0:00", mediaPage);
+    mediaCurrentTimeLabel->setMinimumWidth(44);
+    mediaCurrentTimeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    mediaCurrentTimeLabel->setStyleSheet("QLabel { color: #c9ced7; font-size: 11px; }");
+    controlsLayout->addWidget(mediaCurrentTimeLabel);
 
     mediaSeekSlider = new QSlider(Qt::Horizontal, mediaPage);
     mediaSeekSlider->setRange(0, 0);
+    mediaSeekSlider->setStyleSheet(
+        "QSlider::groove:horizontal { height: 4px; background: #414754; border-radius: 2px; }"
+        "QSlider::sub-page:horizontal { background: #b8c7e6; border-radius: 2px; }"
+        "QSlider::handle:horizontal { width: 12px; margin: -4px 0; border-radius: 6px; background: #eceff5; border: 1px solid #4d5566; }"
+        "QSlider::handle:horizontal:hover { background: #ffffff; }"
+    );
     controlsLayout->addWidget(mediaSeekSlider, 1);
+
+    mediaTotalTimeLabel = new QLabel("0:00", mediaPage);
+    mediaTotalTimeLabel->setMinimumWidth(44);
+    mediaTotalTimeLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    mediaTotalTimeLabel->setStyleSheet("QLabel { color: #c9ced7; font-size: 11px; }");
+    controlsLayout->addWidget(mediaTotalTimeLabel);
+
+    mediaMuteButton = new QPushButton(mediaPage);
+    mediaMuteButton->setMinimumSize(28, 28);
+    mediaMuteButton->setMaximumSize(28, 28);
+    mediaMuteButton->setIconSize(QSize(15, 15));
+    mediaMuteButton->setToolTip("Mute");
+    mediaMuteButton->setStyleSheet(
+        "QPushButton { background-color: #2a2f39; color: #dfe4ed; border: 1px solid #4b5567; border-radius: 14px; padding: 0px; }"
+        "QPushButton:hover { background-color: #353d4a; }"
+        "QPushButton:pressed { background-color: #3f4858; }"
+    );
+    controlsLayout->addWidget(mediaMuteButton);
+
+    mediaVolumeSlider = new QSlider(Qt::Horizontal, mediaPage);
+    mediaVolumeSlider->setRange(0, 100);
+    mediaVolumeSlider->setFixedWidth(92);
+    mediaVolumeSlider->setValue(80);
+    mediaVolumeSlider->setStyleSheet(
+        "QSlider::groove:horizontal { height: 3px; background: #3f4654; border-radius: 2px; }"
+        "QSlider::sub-page:horizontal { background: #b4c3e4; border-radius: 2px; }"
+        "QSlider::handle:horizontal { width: 10px; margin: -4px 0; border-radius: 5px; background: #eff2f8; border: 1px solid #586173; }"
+        "QSlider::handle:horizontal:hover { background: #ffffff; }"
+    );
+    controlsLayout->addWidget(mediaVolumeSlider);
+
     mediaLayout->addLayout(controlsLayout);
 
     stack->addWidget(mediaPage);  // 3
@@ -192,9 +299,64 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     // Empty/unsupported
     auto *emptyLabel = new QLabel("No preview available");
     emptyLabel->setAlignment(Qt::AlignCenter);
-    emptyLabel->setStyleSheet("QLabel { color: #888888; background-color: #1e1e1e; }");
+    emptyLabel->setWordWrap(true);
+    emptyLabel->setMinimumWidth(420);
+    emptyLabel->setStyleSheet(
+        "QLabel { color: #d2d7df; background-color: #242831; border: 1px solid #3b404a; "
+        "border-radius: 12px; padding: 22px; margin: 26px; font-size: 14px; }"
+    );
     unsupportedLabel = emptyLabel;
     stack->addWidget(emptyLabel);  // 4
+
+    // Folder preview page (Finder-like quick summary card)
+    folderPage = new QWidget;
+    auto *folderLayout = new QHBoxLayout(folderPage);
+    folderLayout->setContentsMargins(24, 24, 24, 24);
+    folderLayout->setSpacing(20);
+    folderLayout->setAlignment(Qt::AlignCenter);
+
+    folderIconLabel = new QLabel(folderPage);
+    folderIconLabel->setFixedSize(240, 240);
+    folderIconLabel->setAlignment(Qt::AlignCenter);
+    folderIconLabel->setStyleSheet(
+        "QLabel { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #2a3038, stop:1 #20242b); "
+        "border: 1px solid #3a424e; border-radius: 16px; }"
+    );
+    folderLayout->addWidget(folderIconLabel, 0, Qt::AlignVCenter);
+
+    auto *folderMetaCard = new QWidget(folderPage);
+    folderMetaCard->setObjectName("folderMetaCard");
+    folderMetaCard->setStyleSheet(
+        "#folderMetaCard { background-color: #1f2229; border: 1px solid #393d47; border-radius: 12px; }"
+    );
+    folderMetaCard->setMinimumWidth(420);
+    folderMetaCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto *folderMetaLayout = new QVBoxLayout(folderMetaCard);
+    folderMetaLayout->setContentsMargins(20, 16, 20, 16);
+    folderMetaLayout->setSpacing(10);
+    folderMetaLayout->setAlignment(Qt::AlignVCenter);
+
+    folderNameLabel = new QLabel(folderMetaCard);
+    folderNameLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    folderNameLabel->setWordWrap(true);
+    folderNameLabel->setStyleSheet("QLabel { color: #f3f5f9; font-size: 24px; font-weight: 700; border: none; background: transparent; }");
+    folderMetaLayout->addWidget(folderNameLabel);
+
+    folderInfoLabel = new QLabel(folderMetaCard);
+    folderInfoLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    folderInfoLabel->setWordWrap(true);
+    folderInfoLabel->setStyleSheet("QLabel { color: #cfd4dc; font-size: 14px; border: none; background: transparent; }");
+    folderMetaLayout->addWidget(folderInfoLabel);
+
+    folderPathLabel = new QLabel(folderMetaCard);
+    folderPathLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    folderPathLabel->setWordWrap(true);
+    folderPathLabel->setStyleSheet("QLabel { color: #a8b0bd; font-size: 12px; border: none; background: transparent; }");
+    folderMetaLayout->addWidget(folderPathLabel);
+
+    folderMetaLayout->addStretch(1);
+    folderLayout->addWidget(folderMetaCard, 1, Qt::AlignVCenter);
+    stack->addWidget(folderPage);  // 5
 
     mediaPlayer = new QMediaPlayer(this);
     audioOutput = new QAudioOutput(this);
@@ -204,20 +366,72 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
 
     connect(mediaPlayPauseButton, &QPushButton::clicked, this, &QuickLookDialog::toggleMediaPlayback);
     connect(mediaPlayer, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState state) {
-        mediaPlayPauseButton->setText(state == QMediaPlayer::PlayingState ? "Pause" : "Play");
+        const bool isPlaying = (state == QMediaPlayer::PlayingState);
+        const QIcon icon = isPlaying
+            ? QIcon::fromTheme("media-playback-pause", style()->standardIcon(QStyle::SP_MediaPause))
+            : QIcon::fromTheme("media-playback-start", style()->standardIcon(QStyle::SP_MediaPlay));
+        mediaPlayPauseButton->setIcon(icon);
+        mediaPlayPauseButton->setToolTip(isPlaying ? "Pause" : "Play");
     });
     connect(mediaPlayer, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
         if (!mediaSeekSlider->isSliderDown()) {
             mediaSeekSlider->setValue(static_cast<int>(position));
         }
+        if (mediaCurrentTimeLabel) {
+            mediaCurrentTimeLabel->setText(formatDurationMs(position));
+        }
     });
     connect(mediaPlayer, &QMediaPlayer::durationChanged, this, [this](qint64 duration) {
         mediaSeekSlider->setRange(0, static_cast<int>(duration));
+        if (mediaTotalTimeLabel) {
+            mediaTotalTimeLabel->setText(formatDurationMs(duration));
+        }
     });
     connect(mediaPlayer, &QMediaPlayer::metaDataChanged, this, &QuickLookDialog::updateAudioMetadata);
     connect(mediaSeekSlider, &QSlider::sliderMoved, this, [this](int position) {
         mediaPlayer->setPosition(position);
     });
+
+    auto updateVolumeUi = [this]() {
+        if (!audioOutput || !mediaMuteButton || !mediaVolumeSlider) return;
+
+        const qreal volume = std::clamp(static_cast<double>(audioOutput->volume()), 0.0, 1.0);
+        const bool muted = audioOutput->isMuted() || volume <= 0.001;
+        if (!mediaVolumeSlider->isSliderDown()) {
+            mediaVolumeSlider->setValue(static_cast<int>(volume * 100.0 + 0.5));
+        }
+
+        QIcon icon = QIcon::fromTheme(muted ? "audio-volume-muted"
+                                    : (volume < 0.5 ? "audio-volume-low" : "audio-volume-high"));
+        if (!icon.isNull()) {
+            mediaMuteButton->setIcon(icon);
+            mediaMuteButton->setText(QString());
+        } else {
+            mediaMuteButton->setIcon(QIcon());
+            mediaMuteButton->setText(muted ? "M" : "V");
+        }
+        mediaMuteButton->setToolTip(muted ? "Unmute" : "Mute");
+    };
+
+    connect(mediaMuteButton, &QPushButton::clicked, this, [this, updateVolumeUi]() {
+        if (!audioOutput) return;
+        const bool newMuted = !audioOutput->isMuted();
+        audioOutput->setMuted(newMuted);
+        if (!newMuted && audioOutput->volume() <= 0.001) {
+            audioOutput->setVolume(0.8f);
+        }
+        updateVolumeUi();
+    });
+    connect(mediaVolumeSlider, &QSlider::valueChanged, this, [this](int value) {
+        if (!audioOutput) return;
+        const qreal volume = std::clamp(static_cast<double>(value) / 100.0, 0.0, 1.0);
+        audioOutput->setVolume(volume);
+        audioOutput->setMuted(value == 0);
+    });
+    connect(audioOutput, &QAudioOutput::volumeChanged, this, [updateVolumeUi](qreal) { updateVolumeUi(); });
+    connect(audioOutput, &QAudioOutput::mutedChanged, this, [updateVolumeUi](bool) { updateVolumeUi(); });
+    updateVolumeUi();
+
     connect(mediaPlayer, &QMediaPlayer::errorOccurred, this,
             [this](QMediaPlayer::Error, const QString &errorText) {
         const QString activeRawPath = activeMediaSource.toLocalFile();
@@ -495,6 +709,12 @@ void QuickLookDialog::showMedia(const QString &path, bool isVideo) {
 
     mediaSeekSlider->setRange(0, 0);
     mediaSeekSlider->setValue(0);
+    if (mediaCurrentTimeLabel) {
+        mediaCurrentTimeLabel->setText("0:00");
+    }
+    if (mediaTotalTimeLabel) {
+        mediaTotalTimeLabel->setText("0:00");
+    }
     mediaPlayer->setAudioOutput(audioOutput);
     mediaPlayer->setSource(activeMediaSource);
     mediaPlayer->play();
@@ -514,6 +734,12 @@ void QuickLookDialog::stopMedia() {
         mediaSeekSlider->setRange(0, 0);
         mediaSeekSlider->setValue(0);
     }
+    if (mediaCurrentTimeLabel) {
+        mediaCurrentTimeLabel->setText("0:00");
+    }
+    if (mediaTotalTimeLabel) {
+        mediaTotalTimeLabel->setText("0:00");
+    }
 }
 
 void QuickLookDialog::showUnsupported(const QString &path, const QString &mime) {
@@ -521,9 +747,71 @@ void QuickLookDialog::showUnsupported(const QString &path, const QString &mime) 
     QString name = fi.fileName().isEmpty() ? path : fi.fileName();
     QString typeText = mime.isEmpty() ? "unknown type" : mime;
     unsupportedLabel->setText(
-        QString("No preview available for:\n%1\n\nType: %2").arg(name, typeText)
+        QString("<b>No Preview Available</b><br/><br/>%1<br/><span style='color:#a8b0bd;'>Type: %2</span>")
+            .arg(name, typeText)
     );
     stack->setCurrentWidget(unsupportedLabel);
+}
+
+void QuickLookDialog::showDirectory(const QString &path) {
+    QFileInfo fi(path);
+    const QString displayName = fi.fileName().isEmpty() ? path : fi.fileName();
+    const int itemCount = QDir(path).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).size();
+    const quint64 requestId = m_directorySizeRequestId;
+    const QString modified = fi.lastModified().isValid()
+        ? fi.lastModified().toString("yyyy-MM-dd hh:mm")
+        : QString("Unknown");
+
+    if (folderNameLabel) {
+        folderNameLabel->setText(displayName);
+    }
+    if (folderInfoLabel) {
+        folderInfoLabel->setText(
+            QString("%1 items\nCalculating size…\nModified %2")
+                .arg(itemCount)
+                .arg(modified)
+        );
+    }
+    if (folderPathLabel) {
+        folderPathLabel->setText(path);
+    }
+
+    if (folderIconLabel) {
+        QIcon folderIcon = QIcon::fromTheme("folder");
+        QPixmap pm = folderIcon.pixmap(150, 150);
+        if (pm.isNull()) {
+            pm = QIcon::fromTheme("inode-directory").pixmap(150, 150);
+        }
+        folderIconLabel->setPixmap(pm);
+    }
+
+    if (folderPage) {
+        stack->setCurrentWidget(folderPage);
+    } else {
+        stack->setCurrentWidget(unsupportedLabel);
+    }
+
+    auto *watcher = new QFutureWatcher<qint64>(this);
+    connect(watcher, &QFutureWatcher<qint64>::finished, this, [this, watcher, requestId, path, itemCount, modified]() {
+        const qint64 totalSize = watcher->result();
+        watcher->deleteLater();
+
+        if (requestId != m_directorySizeRequestId || currentFilePath != path) {
+            return;
+        }
+
+        if (folderInfoLabel) {
+            folderInfoLabel->setText(
+                QString("%1 items\n%2 total\nModified %3")
+                    .arg(itemCount)
+                    .arg(formatBytes(totalSize))
+                    .arg(modified)
+            );
+        }
+    });
+    watcher->setFuture(QtConcurrent::run([path]() {
+        return computeDirectorySizeBytes(path);
+    }));
 }
 
 void QuickLookDialog::toggleMediaPlayback() {
@@ -538,8 +826,17 @@ void QuickLookDialog::toggleMediaPlayback() {
 void QuickLookDialog::showFile(const QString &path) {
     currentFilePath = path;
     QFileInfo fi(path);
-    filenameLabel->setText(fi.fileName());
+    filenameLabel->setText(fi.fileName().isEmpty() ? path : fi.fileName());
     stopMedia();
+    ++m_directorySizeRequestId;
+
+    if (fi.isDir()) {
+        showDirectory(path);
+        show();
+        raise();
+        activateWindow();
+        return;
+    }
 
     QMimeDatabase db;
     const auto mt = db.mimeTypeForFile(path, QMimeDatabase::MatchContent);
