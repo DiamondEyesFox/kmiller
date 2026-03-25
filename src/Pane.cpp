@@ -1,15 +1,19 @@
 // Local headers
 #include "Pane.h"
+#include "DialogUtils.h"
 #include "MillerView.h"
 #include "QuickLookDialog.h"
 #include "ThumbCache.h"
 #include "PropertiesDialog.h"
 #include "FileOpsService.h"
+#include "ArchiveService.h"
 
 // Qt Core
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QCryptographicHash>
+#include <QFutureWatcher>
 #include <QMimeData>
 #include <QMimeDatabase>
 #include <QProcess>
@@ -17,6 +21,7 @@
 #include <QSettings>
 #include <QTimer>
 #include <QStandardPaths>
+#include <algorithm>
 #include <functional>
 #include <memory>
 
@@ -34,6 +39,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QFormLayout>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
@@ -42,16 +48,20 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QProgressDialog>
+#include <QPushButton>
 #include <QShortcut>
 #include <QSlider>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QStyledItemDelegate>
 #include <QTextEdit>
 #include <QFrame>
 #include <QToolBar>
 #include <QTreeView>
 #include <QVBoxLayout>
+#include <QStyleOptionViewItem>
 
 // KDE Frameworks
 #include <KApplicationTrader>
@@ -62,24 +72,249 @@
 #include <KJob>
 #include <KIO/ApplicationLauncherJob>
 #include <KIO/CopyJob>
+#include <KIO/DeleteJob>
+#include <KIO/MkdirJob>
+#include <KIO/SimpleJob>
 #include <KService>
 #include <KUrlNavigator>
 
 // External libraries
 #include <poppler-qt6.h>
+#include <QtConcurrent/QtConcurrentRun>
 
 static bool isImageFile(const QString &path) {
     const QByteArray fmt = QImageReader::imageFormat(path);
     return !fmt.isEmpty();
 }
 
-static bool isArchiveFile(const QString &path) {
-    const QString suffix = QFileInfo(path).suffix().toLower();
-    return suffix == "zip" || suffix == "tar" || suffix == "gz" || 
-           suffix == "bz2" || suffix == "xz" || suffix == "7z" ||
-           suffix == "rar" || suffix == "tgz" || suffix == "tbz2" ||
-           suffix == "txz" || suffix == "lzma";
+struct SearchResultEntry {
+    QUrl url;
+    QString name;
+    QString location;
+    QString kind;
+    QDateTime modified;
+    bool isDirectory = false;
+};
+
+static QList<SearchResultEntry> performRecursiveSearch(const QString &rootPath,
+                                                       const QString &query,
+                                                       bool includeHidden,
+                                                       int maxResults = 500) {
+    QList<SearchResultEntry> results;
+    if (rootPath.isEmpty()) {
+        return results;
+    }
+
+    const QString needle = query.trimmed();
+    if (needle.isEmpty()) {
+        return results;
+    }
+
+    QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
+    if (includeHidden) {
+        filters |= QDir::Hidden;
+    }
+
+    QDirIterator it(rootPath, filters, QDirIterator::Subdirectories);
+    while (it.hasNext() && results.size() < maxResults) {
+        it.next();
+        const QFileInfo fi = it.fileInfo();
+        if (!fi.fileName().contains(needle, Qt::CaseInsensitive)) {
+            continue;
+        }
+
+        SearchResultEntry result;
+        result.url = QUrl::fromLocalFile(fi.absoluteFilePath());
+        result.name = fi.fileName();
+        result.location = fi.absolutePath();
+        result.kind = fi.isDir()
+            ? QStringLiteral("Folder")
+            : (fi.suffix().isEmpty()
+                ? QStringLiteral("File")
+                : QStringLiteral("%1 File").arg(fi.suffix().toUpper()));
+        result.modified = fi.lastModified();
+        result.isDirectory = fi.isDir();
+        results.append(result);
+    }
+
+    std::sort(results.begin(), results.end(), [](const SearchResultEntry &left, const SearchResultEntry &right) {
+        if (left.isDirectory != right.isDirectory) {
+            return left.isDirectory && !right.isDirectory;
+        }
+        return QString::localeAwareCompare(left.name, right.name) < 0;
+    });
+
+    return results;
 }
+
+static bool isArchiveFile(const QString &path) {
+    return ArchiveService::canExtractArchive(path);
+}
+
+struct ArchiveFormatOption {
+    QString label;
+    QString extension;
+};
+
+static QList<ArchiveFormatOption> archiveFormatOptions() {
+    return {
+        {QStringLiteral("ZIP (.zip)"), QStringLiteral(".zip")},
+        {QStringLiteral("7-Zip (.7z)"), QStringLiteral(".7z")},
+        {QStringLiteral("Tar (.tar)"), QStringLiteral(".tar")},
+        {QStringLiteral("Tar + gzip (.tar.gz)"), QStringLiteral(".tar.gz")},
+        {QStringLiteral("Tar + bzip2 (.tar.bz2)"), QStringLiteral(".tar.bz2")},
+        {QStringLiteral("Tar + xz (.tar.xz)"), QStringLiteral(".tar.xz")}
+    };
+}
+
+static QStringList knownArchiveExtensions() {
+    QStringList extensions;
+    const QList<ArchiveFormatOption> options = archiveFormatOptions();
+    extensions.reserve(options.size());
+    for (const ArchiveFormatOption &option : options) {
+        extensions.append(option.extension);
+    }
+    extensions << QStringLiteral(".tgz")
+               << QStringLiteral(".tbz2")
+               << QStringLiteral(".tbz")
+               << QStringLiteral(".txz")
+               << QStringLiteral(".rar");
+    std::sort(extensions.begin(), extensions.end(), [](const QString &left, const QString &right) {
+        return left.size() > right.size();
+    });
+    return extensions;
+}
+
+static QString stripKnownArchiveExtension(const QString &name) {
+    const QString lowerName = name.toLower();
+    const QStringList extensions = knownArchiveExtensions();
+    for (const QString &extension : extensions) {
+        if (lowerName.endsWith(extension)) {
+            return name.left(name.size() - extension.size());
+        }
+    }
+    return name;
+}
+
+static int archiveNameSelectionLength(const QString &archiveName) {
+    return stripKnownArchiveExtension(archiveName).size();
+}
+
+static QProgressDialog *createBusyProgressDialog(QWidget *parent,
+                                                 const QString &title,
+                                                 const QString &labelText) {
+    auto *dialog = new QProgressDialog(labelText, QString(), 0, 0, parent);
+    dialog->setWindowTitle(title);
+    dialog->setCancelButton(nullptr);
+    dialog->setWindowModality(Qt::ApplicationModal);
+    dialog->setMinimumDuration(0);
+    dialog->setAutoClose(false);
+    dialog->setAutoReset(false);
+    dialog->show();
+    return dialog;
+}
+
+static QString uniqueChildPath(const QString &parentDirPath, const QString &preferredName) {
+    QDir parentDir(parentDirPath);
+    QString candidate = preferredName.trimmed();
+    if (candidate.isEmpty()) {
+        candidate = QStringLiteral("Extracted");
+    }
+
+    QString childPath = parentDir.filePath(candidate);
+    int counter = 2;
+    while (QFileInfo::exists(childPath)) {
+        childPath = parentDir.filePath(QStringLiteral("%1 %2").arg(candidate).arg(counter++));
+    }
+    return childPath;
+}
+
+static QString summarizeConflictPaths(const QStringList &relativePaths, int maxItems = 5) {
+    QStringList lines;
+    const int previewCount = qMin(maxItems, relativePaths.size());
+    for (int i = 0; i < previewCount; ++i) {
+        lines.append(relativePaths.at(i));
+    }
+    if (relativePaths.size() > previewCount) {
+        lines.append(QStringLiteral("..."));
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+static bool supportsThumbnailPreview(const QString &path) {
+    QFileInfo fi(path);
+    return isImageFile(path) || fi.suffix().compare("pdf", Qt::CaseInsensitive) == 0;
+}
+
+static bool isDirectorySymlinkUrl(const QUrl &url) {
+    if (!url.isLocalFile()) {
+        return false;
+    }
+
+    const QFileInfo fi(url.toLocalFile());
+    return fi.isSymLink() && fi.isDir();
+}
+
+static QString displayNameForFileInfo(const QFileInfo &fi, bool showFileExtensions) {
+    const QString fileName = fi.fileName();
+    if (showFileExtensions || fi.isDir()) {
+        return fileName;
+    }
+
+    const int lastDot = fileName.lastIndexOf('.');
+    if (lastDot <= 0) {
+        return fileName;
+    }
+
+    return fileName.left(lastDot);
+}
+
+class PaneItemDelegate final : public QStyledItemDelegate {
+public:
+    using UrlResolver = std::function<QUrl(const QModelIndex &)>;
+    using IconResolver = std::function<QIcon(const QUrl &)>;
+    using BoolResolver = std::function<bool()>;
+
+    PaneItemDelegate(UrlResolver urlResolver,
+                     IconResolver iconResolver,
+                     BoolResolver showThumbnailsResolver,
+                     BoolResolver showFileExtensionsResolver,
+                     QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+        , m_urlResolver(std::move(urlResolver))
+        , m_iconResolver(std::move(iconResolver))
+        , m_showThumbnailsResolver(std::move(showThumbnailsResolver))
+        , m_showFileExtensionsResolver(std::move(showFileExtensionsResolver)) {}
+
+protected:
+    void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override {
+        QStyledItemDelegate::initStyleOption(option, index);
+
+        if (!option || index.column() != 0) {
+            return;
+        }
+
+        const QUrl url = m_urlResolver ? m_urlResolver(index) : QUrl();
+        if (!url.isLocalFile()) {
+            return;
+        }
+
+        const QFileInfo fi(url.toLocalFile());
+        if (m_showFileExtensionsResolver && !m_showFileExtensionsResolver()) {
+            option->text = displayNameForFileInfo(fi, false);
+        }
+
+        if (m_showThumbnailsResolver && m_showThumbnailsResolver() && supportsThumbnailPreview(fi.absoluteFilePath())) {
+            option->icon = m_iconResolver ? m_iconResolver(url) : option->icon;
+        }
+    }
+
+private:
+    UrlResolver m_urlResolver;
+    IconResolver m_iconResolver;
+    BoolResolver m_showThumbnailsResolver;
+    BoolResolver m_showFileExtensionsResolver;
+};
 
 static QPixmap getFileTypeIcon(const QFileInfo &fi, int size = 128) {
     QMimeDatabase db;
@@ -183,6 +418,16 @@ static bool confirmDeleteAction(QWidget *parent, const QList<QUrl> &urls, bool p
     return reply == QMessageBox::Yes;
 }
 
+static void refreshPaneAfterJob(Pane *pane, KJob *job) {
+    if (!pane || !job) {
+        return;
+    }
+
+    QObject::connect(job, &KJob::result, pane, [pane](KJob *) {
+        pane->refreshCurrentLocation();
+    });
+}
+
 
 Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     auto *root = new QVBoxLayout(this);
@@ -201,7 +446,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Search on the right side
     tb->addWidget(new QLabel(" Search "));
     searchBox = new QLineEdit(this);
-    searchBox->setPlaceholderText("Filter files...");
+    searchBox->setPlaceholderText("Search this folder...");
     searchBox->setFixedWidth(150);
     tb->addWidget(searchBox);
 
@@ -284,6 +529,13 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     iconView->setWordWrap(true);
     iconView->setTextElideMode(Qt::ElideMiddle);
     iconView->setContextMenuPolicy(Qt::CustomContextMenu);
+    iconView->setItemDelegate(new PaneItemDelegate(
+        [this](const QModelIndex &idx) { return urlForIndex(idx); },
+        [this](const QUrl &url) { return getIconForFile(url); },
+        [this]() { return m_showThumbnails; },
+        [this]() { return m_showFileExtensions; },
+        iconView
+    ));
     
     stack->addWidget(iconView);
 
@@ -302,6 +554,13 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     detailsView->setDragDropMode(QAbstractItemView::DragDrop);
     detailsView->setDefaultDropAction(Qt::MoveAction);  // Finder-like behavior
     detailsView->setContextMenuPolicy(Qt::CustomContextMenu);
+    detailsView->setItemDelegate(new PaneItemDelegate(
+        [this](const QModelIndex &idx) { return urlForIndex(idx); },
+        [this](const QUrl &url) { return getIconForFile(url); },
+        [this]() { return m_showThumbnails; },
+        [this]() { return m_showFileExtensions; },
+        detailsView
+    ));
     
     // Load column visibility and width settings
     QSettings settings;
@@ -334,12 +593,41 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     compactView->setDragDropMode(QAbstractItemView::DragDrop);
     compactView->setDefaultDropAction(Qt::MoveAction);  // Finder-like behavior
     compactView->setContextMenuPolicy(Qt::CustomContextMenu);
+    compactView->setItemDelegate(new PaneItemDelegate(
+        [this](const QModelIndex &idx) { return urlForIndex(idx); },
+        [this](const QUrl &url) { return getIconForFile(url); },
+        [this]() { return m_showThumbnails; },
+        [this]() { return m_showFileExtensions; },
+        compactView
+    ));
     stack->addWidget(compactView);
 
+    searchResultsModel = new QStandardItemModel(this);
+    searchResultsModel->setHorizontalHeaderLabels({tr("Name"), tr("Location"), tr("Type"), tr("Modified")});
+
+    searchResultsView = new QTreeView(this);
+    searchResultsView->setModel(searchResultsModel);
+    searchResultsView->setRootIsDecorated(false);
+    searchResultsView->setAlternatingRowColors(true);
+    searchResultsView->header()->setStretchLastSection(true);
+    searchResultsView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    searchResultsView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    searchResultsView->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    searchResultsView->setContextMenuPolicy(Qt::CustomContextMenu);
+    stack->addWidget(searchResultsView);
+
     miller = new MillerView(this);
+    m_showThumbnails = settings.value("view/showThumbnails", true).toBool();
+    m_showFileExtensions = settings.value("view/showFileExtensions", true).toBool();
+    m_millerColumnWidth = settings.value("view/millerColumnWidth", 200).toInt();
+    m_followSymlinks = settings.value("advanced/followSymlinks", false).toBool();
+    miller->setShowThumbnails(m_showThumbnails);
+    miller->setShowFileExtensions(m_showFileExtensions);
+    miller->setColumnWidth(m_millerColumnWidth);
+    miller->setFollowSymlinks(m_followSymlinks);
     stack->addWidget(miller);
     // Ensure Ctrl+A selects all in classic views
-    for (QAbstractItemView* v : { static_cast<QAbstractItemView*>(iconView), static_cast<QAbstractItemView*>(detailsView), static_cast<QAbstractItemView*>(compactView) }) {
+    for (QAbstractItemView* v : { static_cast<QAbstractItemView*>(iconView), static_cast<QAbstractItemView*>(detailsView), static_cast<QAbstractItemView*>(compactView), static_cast<QAbstractItemView*>(searchResultsView) }) {
         if (!v) continue;
         auto *sc = new QShortcut(QKeySequence::SelectAll, v);
         connect(sc, &QShortcut::activated, v, [v]{ v->selectAll(); });
@@ -348,6 +636,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
     connect(miller, &MillerView::contextMenuRequested, this, [this](const QList<QUrl> &urls, const QPoint &g){ showContextMenu(g, urls); });
     connect(miller, &MillerView::emptySpaceContextMenuRequested, this, [this](const QUrl &folderUrl, const QPoint &g){ showEmptySpaceContextMenu(g, folderUrl); });
+    connect(miller, &MillerView::renameRequested, this, &Pane::renameSelected);
     connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){
         if (m_previewVisible) updatePreviewForUrl(url);
         // Update QuickLook if it's open
@@ -379,8 +668,10 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     
     // Search/filter functionality
     connect(searchBox, &QLineEdit::textChanged, this, [this](const QString &text){
-        if (proxy) {
-            proxy->setFilterWildcard(text.isEmpty() ? QString() : QString("*%1*").arg(text));
+        if (text.trimmed().isEmpty()) {
+            clearSearchMode();
+        } else {
+            beginSearch(text);
         }
     });
 
@@ -418,7 +709,8 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
             const qint64 elapsedMs = m_renameClickTimer.isValid() ? m_renameClickTimer.elapsed() : -1;
             // Finder-style slow second click on selected item starts rename.
             if (sameTarget && elapsedMs >= 500 && elapsedMs <= 2000) {
-                beginInlineRename(v, idx);
+                v->setCurrentIndex(idx);
+                renameSelected();
                 m_renameClickTimer.invalidate();
                 m_renameClickIndex = QPersistentModelIndex();
                 return;
@@ -435,6 +727,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     hookSel(iconView);
     hookSel(detailsView);
     hookSel(compactView);
+    hookSel(searchResultsView);
 
     applyIconSize(64);
     setRoot(startUrl);
@@ -457,31 +750,118 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
 }
 
 void Pane::setRoot(const QUrl &url) {
-    // Add to history if this is a new navigation (not back/forward)
-    if (currentRoot != url && m_historyIndex >= 0) {
-        // Remove any forward history when navigating to a new location
-        while (m_history.size() > m_historyIndex + 1) {
-            m_history.removeLast();
-        }
-        m_history.append(url);
-        m_historyIndex = m_history.size() - 1;
-    } else if (m_historyIndex < 0) {
-        // First navigation
-        m_history.clear();
-        m_history.append(url);
-        m_historyIndex = 0;
-    }
-    
+    m_navigationState.navigateTo(url);
+    applyLocation(m_navigationState.current());
+}
+
+void Pane::setUrl(const QUrl &url) { setRoot(url); }
+
+void Pane::applyLocation(const QUrl &url, bool emitChangeSignal) {
     currentRoot = url;
     if (auto *l = dirModel->dirLister()) {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
     if (miller) miller->setRootUrl(url);
+    if (searchBox && !searchBox->text().trimmed().isEmpty()) {
+        beginSearch(searchBox->text());
+    }
     syncNavigatorLocation(url);
-    emit urlChanged(url);
+    if (emitChangeSignal) {
+        emit urlChanged(url);
+    }
 }
 
-void Pane::setUrl(const QUrl &url) { setRoot(url); }
+void Pane::beginSearch(const QString &query) {
+    if (!searchResultsModel || !searchResultsView || !stack) {
+        return;
+    }
+
+    const QString trimmedQuery = query.trimmed();
+    if (trimmedQuery.isEmpty()) {
+        clearSearchMode();
+        return;
+    }
+
+    if (!m_searchModeActive && stack->currentWidget() != searchResultsView) {
+        m_savedViewModeBeforeSearch = currentViewMode();
+    }
+    m_searchModeActive = true;
+    stack->setCurrentWidget(searchResultsView);
+
+    ++m_searchRequestId;
+    const quint64 requestId = m_searchRequestId;
+
+    searchResultsModel->clear();
+    searchResultsModel->setHorizontalHeaderLabels({tr("Name"), tr("Location"), tr("Type"), tr("Modified")});
+
+    auto *watcher = new QFutureWatcher<QList<SearchResultEntry>>(this);
+    connect(watcher, &QFutureWatcher<QList<SearchResultEntry>>::finished, this, [this, watcher, requestId]() {
+        const QList<SearchResultEntry> results = watcher->result();
+        watcher->deleteLater();
+
+        if (requestId != m_searchRequestId || !searchResultsModel || !searchResultsView) {
+            return;
+        }
+
+        searchResultsModel->clear();
+        searchResultsModel->setHorizontalHeaderLabels({tr("Name"), tr("Location"), tr("Type"), tr("Modified")});
+
+        QFileIconProvider iconProvider;
+        for (const SearchResultEntry &result : results) {
+            auto *nameItem = new QStandardItem(result.name);
+            nameItem->setData(result.url, Qt::UserRole);
+
+            QIcon icon = result.isDirectory ? QIcon::fromTheme("folder") : getIconForFile(result.url);
+            if (icon.isNull() && result.url.isLocalFile()) {
+                icon = iconProvider.icon(QFileInfo(result.url.toLocalFile()));
+            }
+            if (!icon.isNull()) {
+                nameItem->setIcon(icon);
+            }
+
+            auto *locationItem = new QStandardItem(result.location);
+            auto *typeItem = new QStandardItem(result.kind);
+            auto *modifiedItem = new QStandardItem(
+                result.modified.isValid()
+                    ? result.modified.toString(QStringLiteral("yyyy-MM-dd hh:mm"))
+                    : QString());
+
+            searchResultsModel->appendRow({nameItem, locationItem, typeItem, modifiedItem});
+        }
+
+        if (searchResultsModel->rowCount() > 0) {
+            const QModelIndex first = searchResultsModel->index(0, 0);
+            searchResultsView->setCurrentIndex(first);
+            searchResultsView->scrollTo(first);
+        }
+
+        updateStatus();
+    });
+
+    const QString rootPath = currentRoot.toLocalFile();
+    const bool includeHidden = m_showHiddenFiles;
+    watcher->setFuture(QtConcurrent::run([rootPath, trimmedQuery, includeHidden]() {
+        return performRecursiveSearch(rootPath, trimmedQuery, includeHidden);
+    }));
+}
+
+void Pane::clearSearchMode() {
+    ++m_searchRequestId;
+
+    if (searchResultsModel) {
+        searchResultsModel->clear();
+        searchResultsModel->setHorizontalHeaderLabels({tr("Name"), tr("Location"), tr("Type"), tr("Modified")});
+    }
+
+    const bool wasSearchView = m_searchModeActive && stack && stack->currentWidget() == searchResultsView;
+    m_searchModeActive = false;
+
+    if (wasSearchView) {
+        setViewMode(m_savedViewModeBeforeSearch);
+    }
+
+    updateStatus();
+}
 
 void Pane::syncNavigatorLocation(const QUrl &url) {
     if (!nav || nav->locationUrl() == url) return;
@@ -492,6 +872,14 @@ void Pane::syncNavigatorLocation(const QUrl &url) {
 void Pane::setViewMode(int idx) {
     if (!stack) return;
     if (idx < 0 || idx > 3) return;
+
+    if (m_searchModeActive) {
+        m_savedViewModeBeforeSearch = idx;
+        if (stack->currentWidget() == searchResultsView) {
+            return;
+        }
+    }
+
     stack->setCurrentIndex(idx);
 
     // Ensure a sane current/selection when switching (for non-Miller)
@@ -529,7 +917,13 @@ void Pane::goHome() { setRoot(QUrl::fromLocalFile(QDir::homePath())); }
 void Pane::onViewModeChanged(int idx) { setViewMode(idx); }
 
 int Pane::currentViewMode() const {
-    return stack ? stack->currentIndex() : 0;
+    if (!stack) {
+        return 0;
+    }
+    if (stack->currentWidget() == searchResultsView) {
+        return m_savedViewModeBeforeSearch;
+    }
+    return stack->currentIndex();
 }
 void Pane::onZoomChanged(int val) { applyIconSize(val); }
 void Pane::onNavigatorUrlChanged(const QUrl &url) {
@@ -541,17 +935,100 @@ void Pane::onNavigatorUrlChanged(const QUrl &url) {
 void Pane::applyIconSize(int px) { if (iconView) iconView->setIconSize(QSize(px,px)); }
 
 QUrl Pane::urlForIndex(const QModelIndex &proxyIndex) const {
+    if (searchResultsView && searchResultsModel && proxyIndex.isValid() && proxyIndex.model() == searchResultsModel) {
+        const QModelIndex nameIndex = proxyIndex.sibling(proxyIndex.row(), 0);
+        return nameIndex.data(Qt::UserRole).toUrl();
+    }
+
     QModelIndex src = proxy->mapToSource(proxyIndex);
     KFileItem item = dirModel->itemForIndex(src);
     return item.url();
 }
 
+QModelIndex Pane::currentSelectionIndexForView(QAbstractItemView *view) const {
+    if (!view || !view->selectionModel()) {
+        return QModelIndex();
+    }
+
+    const QModelIndex current = view->selectionModel()->currentIndex();
+    if (current.isValid()) {
+        return current;
+    }
+
+    const auto selectedRows = view->selectionModel()->selectedRows();
+    if (!selectedRows.isEmpty()) {
+        return selectedRows.first();
+    }
+
+    return QModelIndex();
+}
+
+QModelIndex Pane::currentSelectionIndex() const {
+    if (stack->currentWidget() == miller) {
+        return QModelIndex();
+    }
+
+    auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+    return currentSelectionIndexForView(view);
+}
+
+QUrl Pane::primarySelectionUrl() const {
+    if (stack->currentWidget() == miller) {
+        const QList<QUrl> urls = miller->getSelectedUrls();
+        if (!urls.isEmpty()) {
+            return urls.first();
+        }
+        return QUrl();
+    }
+
+    const QModelIndex index = currentSelectionIndex();
+    if (!index.isValid()) {
+        return QUrl();
+    }
+
+    return urlForIndex(index);
+}
+
+void Pane::selectUrlInActiveView(const QUrl &targetUrl) {
+    if (!targetUrl.isValid() || stack->currentWidget() == miller) {
+        return;
+    }
+
+    QTimer::singleShot(100, this, [this, targetUrl]() {
+        auto *view = qobject_cast<QAbstractItemView *>(stack->currentWidget());
+        if (!view || !proxy) {
+            return;
+        }
+
+        for (int i = 0; i < proxy->rowCount(); ++i) {
+            const QModelIndex index = proxy->index(i, 0);
+            if (!index.isValid() || urlForIndex(index) != targetUrl) {
+                continue;
+            }
+
+            view->setCurrentIndex(index);
+            view->scrollTo(index);
+            if (QItemSelectionModel *selection = view->selectionModel()) {
+                selection->select(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+            }
+            break;
+        }
+    });
+}
+
 void Pane::onActivated(const QModelIndex &idx) {
     QUrl url = urlForIndex(idx);
     if (!url.isValid()) return;
-    KFileItem item = dirModel->itemForIndex(proxy->mapToSource(idx));
-    if (item.isDir()) {
-        setRoot(url);
+
+    if (stack && stack->currentWidget() == searchResultsView && searchBox && !searchBox->text().isEmpty()) {
+        searchBox->clear();
+    }
+
+    const QFileInfo fi(url.toLocalFile());
+    if (url.isLocalFile() && fi.isDir()) {
+        if (!tryNavigateToDirectoryUrl(url, true)) {
+            return;
+        }
     } else {
         FileOpsService::openUrl(url, this);
     }
@@ -566,20 +1043,9 @@ void Pane::onCurrentChanged(const QModelIndex &current, const QModelIndex &) {
 }
 
 void Pane::quickLookSelected() {
-    if (stack->currentWidget() == miller) {
-        const QList<QUrl> urls = miller->getSelectedUrls();
-        if (urls.isEmpty() || !urls.first().isLocalFile()) return;
-        if (!ql) ql = new QuickLookDialog(this);
-        ql->showFile(urls.first().toLocalFile());
-        return;
-    }
-
-    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
-    if (!v) return;
-    
-    QUrl url = urlForIndex(v->currentIndex());
+    const QUrl url = primarySelectionUrl();
     if (!url.isValid() || !url.isLocalFile()) return;
-    
+
     if (!ql) ql = new QuickLookDialog(this);
     ql->showFile(url.toLocalFile());
 }
@@ -589,17 +1055,9 @@ void Pane::setPreviewVisible(bool on) {
     if (preview) preview->setVisible(on);
     if (on) {
         // seed with current selection if any
-        if (stack->currentWidget() == miller) {
-            const QList<QUrl> urls = miller->getSelectedUrls();
-            if (!urls.isEmpty() && urls.first().isValid()) {
-                updatePreviewForUrl(urls.first());
-            } else {
-                clearPreview();
-            }
-        } else if (auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
-            const QUrl u = urlForIndex(v->currentIndex());
-            if (u.isValid()) updatePreviewForUrl(u);
-            else clearPreview();
+        const QUrl url = primarySelectionUrl();
+        if (url.isValid()) {
+            updatePreviewForUrl(url);
         } else {
             clearPreview();
         }
@@ -619,6 +1077,99 @@ void Pane::setShowHiddenFiles(bool show) {
     if (miller) {
         miller->setShowHiddenFiles(show);
     }
+
+    if (searchBox && !searchBox->text().trimmed().isEmpty()) {
+        beginSearch(searchBox->text());
+    }
+}
+
+void Pane::setShowThumbnails(bool show) {
+    m_showThumbnails = show;
+
+    if (miller) {
+        miller->setShowThumbnails(show);
+    }
+
+    for (QAbstractItemView *view : {static_cast<QAbstractItemView *>(iconView),
+                                    static_cast<QAbstractItemView *>(detailsView),
+                                    static_cast<QAbstractItemView *>(compactView),
+                                    static_cast<QAbstractItemView *>(searchResultsView)}) {
+        if (view && view->viewport()) {
+            view->viewport()->update();
+        }
+    }
+
+    if (searchBox && !searchBox->text().trimmed().isEmpty()) {
+        beginSearch(searchBox->text());
+    }
+}
+
+void Pane::setShowFileExtensions(bool show) {
+    m_showFileExtensions = show;
+
+    if (miller) {
+        miller->setShowFileExtensions(show);
+    }
+
+    for (QAbstractItemView *view : {static_cast<QAbstractItemView *>(iconView),
+                                    static_cast<QAbstractItemView *>(detailsView),
+                                    static_cast<QAbstractItemView *>(compactView),
+                                    static_cast<QAbstractItemView *>(searchResultsView)}) {
+        if (view && view->viewport()) {
+            view->viewport()->update();
+        }
+    }
+
+    if (m_previewVisible) {
+        const QUrl url = primarySelectionUrl();
+        if (url.isValid()) {
+            updatePreviewForUrl(url);
+        }
+    }
+
+    if (searchBox && !searchBox->text().trimmed().isEmpty()) {
+        beginSearch(searchBox->text());
+    }
+}
+
+void Pane::setMillerColumnWidth(int width) {
+    if (width < 150) width = 150;
+    if (width > 400) width = 400;
+
+    m_millerColumnWidth = width;
+    if (miller) {
+        miller->setColumnWidth(width);
+    }
+}
+
+void Pane::setFollowSymlinks(bool follow) {
+    m_followSymlinks = follow;
+
+    if (miller) {
+        miller->setFollowSymlinks(follow);
+    }
+}
+
+bool Pane::tryNavigateToDirectoryUrl(const QUrl &url, bool showBlockedMessage) {
+    if (!url.isValid()) {
+        return false;
+    }
+
+    if (!m_followSymlinks && isDirectorySymlinkUrl(url)) {
+        if (showBlockedMessage) {
+            const QFileInfo fi(url.toLocalFile());
+            const QString displayName = fi.fileName().isEmpty() ? url.toLocalFile() : fi.fileName();
+            QMessageBox::information(
+                this,
+                tr("Symlink Navigation Disabled"),
+                tr("'%1' is a symbolic link to a directory.\n\nEnable 'Follow symbolic links' in Preferences to navigate into it.")
+                    .arg(displayName));
+        }
+        return false;
+    }
+
+    setRoot(url);
+    return true;
 }
 
 void Pane::clearPreview() {
@@ -641,9 +1192,12 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
         }
 
         const QString displayName = fi.fileName().isEmpty() ? path : fi.fileName();
+        const QString visibleName = fi.fileName().isEmpty()
+            ? path
+            : displayNameForFileInfo(fi, m_showFileExtensions);
         const int itemCount = QDir(path).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).size();
         previewText->setPlainText(QString("%1\n%2 items")
-                                  .arg(displayName)
+                                  .arg(visibleName)
                                   .arg(itemCount));
         return;
     }
@@ -657,7 +1211,7 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
             previewImage->setPixmap(pm.scaled(w, h, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }
         previewText->setPlainText(QString("%1 — %2 KB")
-                                  .arg(fi.fileName())
+                                  .arg(displayNameForFileInfo(fi, m_showFileExtensions))
                                   .arg((fi.size()+1023)/1024));
         return;
     }
@@ -674,7 +1228,7 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
                     previewImage->setPixmap(QPixmap::fromImage(img));
                 }
             }
-            previewText->setPlainText(fi.fileName());
+            previewText->setPlainText(displayNameForFileInfo(fi, m_showFileExtensions));
             return;
         }
     }
@@ -686,7 +1240,7 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
     }
     
     previewText->setPlainText(QString("%1 — %2 KB")
-                              .arg(fi.fileName())
+                              .arg(displayNameForFileInfo(fi, m_showFileExtensions))
                               .arg((fi.size()+1023)/1024));
 }
 
@@ -698,14 +1252,9 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         selectedUrls = getSelectedUrls();
     }
     if (selectedUrls.isEmpty()) {
-        // Try current index as fallback
-        QAbstractItemView *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
-        if (v) {
-            QModelIndex idx = v->currentIndex();
-            if (idx.isValid()) {
-                QUrl u = urlForIndex(idx);
-                if (u.isValid()) selectedUrls.append(u);
-            }
+        const QUrl current = primarySelectionUrl();
+        if (current.isValid()) {
+            selectedUrls.append(current);
         }
     }
     if (selectedUrls.isEmpty()) return;
@@ -790,11 +1339,15 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 
     // --- Compress/Extract ---
     QAction *actCompress = nullptr;
-    QAction *actExtract = nullptr;
+    QAction *actExtractHere = nullptr;
+    QAction *actExtractToFolder = nullptr;
+    QAction *actExtractTo = nullptr;
 
     // Show Extract only for single archive selection
     if (!multiSelect && isArchiveFile(firstUrl.toLocalFile())) {
-        actExtract = menu.addAction("Extract Here...");
+        actExtractHere = menu.addAction("Extract Here");
+        actExtractToFolder = menu.addAction("Extract to New Folder");
+        actExtractTo = menu.addAction("Extract To...");
     } else {
         // Show Compress for any selection (including multiple files)
         actCompress = menu.addAction(multiSelect ? QString("Compress %1 Items...").arg(count) : "Compress...");
@@ -805,6 +1358,13 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     // --- Folder operations ---
     QAction *actNewFolder = menu.addAction("New Folder");
     actNewFolder->setShortcut(QKeySequence("Ctrl+Shift+N"));
+
+    QAction *actOpenTerminal = nullptr;
+    if (!multiSelect && firstFi.isDir()) {
+        actOpenTerminal = menu.addAction(QString("Open Terminal in \"%1\"").arg(firstFi.fileName()));
+    } else {
+        actOpenTerminal = menu.addAction("Open Terminal Here");
+    }
 
     menu.addSeparator();
 
@@ -818,8 +1378,12 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 
     // Handle actions
     if (chosen == actOpen) {
-        for (const QUrl &url : selectedUrls) {
-            FileOpsService::openUrl(url, this);
+        if (!multiSelect && firstFi.isDir()) {
+            tryNavigateToDirectoryUrl(firstUrl, true);
+        } else {
+            for (const QUrl &url : selectedUrls) {
+                FileOpsService::openUrl(url, this);
+            }
         }
         return;
     }
@@ -864,12 +1428,24 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         compressSelected();
         return;
     }
-    if (chosen == actExtract) {
+    if (chosen == actExtractHere) {
+        extractArchiveHere(firstUrl);
+        return;
+    }
+    if (chosen == actExtractToFolder) {
+        extractArchiveToNewFolder(firstUrl);
+        return;
+    }
+    if (chosen == actExtractTo) {
         extractArchive(firstUrl);
         return;
     }
     if (chosen == actNewFolder) {
         createNewFolder();
+        return;
+    }
+    if (chosen == actOpenTerminal) {
+        openTerminalAt(firstFi.isDir() && !multiSelect ? firstUrl : QUrl::fromLocalFile(firstFi.absolutePath()));
         return;
     }
     if (chosen == actProperties) {
@@ -939,6 +1515,11 @@ void Pane::showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder
         createNewFolderIn(pasteDestination);
     });
 
+    QAction *openTerminalAction = menu.addAction("Open Terminal Here");
+    connect(openTerminalAction, &QAction::triggered, this, [this, pasteDestination]() {
+        openTerminalAt(pasteDestination);
+    });
+
     menu.addSeparator();
 
     // Add paste if clipboard has URLs
@@ -978,11 +1559,9 @@ QList<QUrl> Pane::selectedUrls() const {
     QList<QUrl> urls = getSelectedUrls();
     if (!urls.isEmpty()) return urls;
 
-    // Fallback to current item for non-Miller views.
-    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
-    if (v) {
-        QUrl current = urlForIndex(v->currentIndex());
-        if (current.isValid()) urls.append(current);
+    const QUrl current = primarySelectionUrl();
+    if (current.isValid()) {
+        urls.append(current);
     }
     return urls;
 }
@@ -1012,41 +1591,14 @@ void Pane::copySelected() {
     QList<QUrl> urls = getSelectedUrls();
     if (urls.isEmpty()) return;
 
-    QMimeData *mimeData = new QMimeData();
-    mimeData->setUrls(urls);
-
-    // For GNOME/Nautilus compatibility: x-special/gnome-copied-files format
-    // Format: "copy\nfile:///path1\nfile:///path2..."
-    QByteArray gnomeData = "copy";
-    for (const QUrl &url : urls) {
-        gnomeData += '\n' + url.toEncoded();
-    }
-    mimeData->setData("x-special/gnome-copied-files", gnomeData);
-
-    // Note: KDE's x-kde-cutselection is NOT set for copy (absence = copy)
-
-    QGuiApplication::clipboard()->setMimeData(mimeData);
+    FileOpsService::setClipboardUrls(urls, false);
 }
 
 void Pane::cutSelected() {
     QList<QUrl> urls = getSelectedUrls();
     if (urls.isEmpty()) return;
 
-    QMimeData *mimeData = new QMimeData();
-    mimeData->setUrls(urls);
-
-    // KDE/Dolphin: mark as cut operation
-    mimeData->setData("application/x-kde-cutselection", "1");
-
-    // GNOME/Nautilus compatibility: x-special/gnome-copied-files format
-    // Format: "cut\nfile:///path1\nfile:///path2..."
-    QByteArray gnomeData = "cut";
-    for (const QUrl &url : urls) {
-        gnomeData += '\n' + url.toEncoded();
-    }
-    mimeData->setData("x-special/gnome-copied-files", gnomeData);
-
-    QGuiApplication::clipboard()->setMimeData(mimeData);
+    FileOpsService::setClipboardUrls(urls, true);
 }
 
 void Pane::pasteFiles() {
@@ -1062,49 +1614,69 @@ void Pane::pasteFilesToDestination(const QUrl &destination) {
     QList<QUrl> urls = mimeData->urls();
     if (urls.isEmpty()) return;
 
-    // Check if cut operation - support both KDE and GNOME formats
-    bool isCut = false;
-
-    // KDE format: application/x-kde-cutselection == "1"
-    QByteArray kdeData = mimeData->data("application/x-kde-cutselection");
-    if (kdeData == QByteArray("1")) {
-        isCut = true;
-    }
-
-    // GNOME format: x-special/gnome-copied-files starts with "cut\n"
-    if (!isCut) {
-        QByteArray gnomeData = mimeData->data("x-special/gnome-copied-files");
-        if (gnomeData.startsWith("cut\n") || gnomeData.startsWith("cut\r")) {
-            isCut = true;
-        }
-    }
+    const bool isCut = FileOpsService::isClipboardCutOperation(mimeData);
 
     if (isCut) {
-        FileOpsService::move(urls, destination, this);
-        // Clear clipboard after move to prevent re-moving
-        QGuiApplication::clipboard()->clear();
+        KIO::CopyJob *job = FileOpsService::move(urls, destination, this);
+        refreshPaneAfterJob(this, job);
+        connect(job, &KJob::result, this, [](KJob *finishedJob) {
+            if (!finishedJob->error()) {
+                QGuiApplication::clipboard()->clear();
+            }
+        });
     } else {
-        FileOpsService::copy(urls, destination, this);
+        refreshPaneAfterJob(this, FileOpsService::copy(urls, destination, this));
     }
 }
 
 bool Pane::isClipboardCutOperation() const {
     const QClipboard *clipboard = QGuiApplication::clipboard();
     const QMimeData *mimeData = clipboard->mimeData();
-    if (!mimeData) return false;
+    return FileOpsService::isClipboardCutOperation(mimeData);
+}
 
-    // KDE format
-    if (mimeData->data("application/x-kde-cutselection") == QByteArray("1")) {
-        return true;
+void Pane::openTerminalAt(const QUrl &targetFolder) {
+    if (!targetFolder.isValid() || !targetFolder.isLocalFile()) {
+        return;
     }
 
-    // GNOME format
-    QByteArray gnomeData = mimeData->data("x-special/gnome-copied-files");
-    if (gnomeData.startsWith("cut\n") || gnomeData.startsWith("cut\r")) {
-        return true;
+    const QString workingDirectory = targetFolder.toLocalFile();
+    if (workingDirectory.isEmpty()) {
+        return;
     }
 
-    return false;
+    QSettings settings;
+    QString terminalCommand = settings.value("advanced/defaultTerminal", "konsole").toString().trimmed();
+    if (terminalCommand.isEmpty()) {
+        terminalCommand = QStringLiteral("konsole");
+    }
+
+    QStringList parts = QProcess::splitCommand(terminalCommand);
+    if (parts.isEmpty()) {
+        QMessageBox::warning(this, "Terminal Error", QString("Invalid terminal command: %1").arg(terminalCommand));
+        return;
+    }
+
+    QString program = parts.takeFirst();
+    bool injectedPath = false;
+    for (QString &arg : parts) {
+        if (arg == "%d" || arg == "%D" || arg == "%p" || arg == "%P") {
+            arg = workingDirectory;
+            injectedPath = true;
+        }
+    }
+
+    const bool started = injectedPath
+        ? QProcess::startDetached(program, parts)
+        : QProcess::startDetached(program, parts, workingDirectory);
+
+    if (!started) {
+        QMessageBox::warning(
+            this,
+            "Terminal Error",
+            QString("Failed to launch terminal command \"%1\" in \"%2\".")
+                .arg(terminalCommand, workingDirectory));
+    }
 }
 
 void Pane::deleteSelected() {
@@ -1117,7 +1689,7 @@ void Pane::deleteSelected() {
 
     if (moveToTrashByDefault) {
         if (confirmDelete && !confirmDeleteAction(this, urls, false)) return;
-        FileOpsService::trash(urls, this);
+        refreshPaneAfterJob(this, FileOpsService::trash(urls, this));
         return;
     }
 
@@ -1132,7 +1704,7 @@ void Pane::deleteSelectedPermanently() {
     const bool confirmDelete = settings.value("advanced/confirmDelete", true).toBool();
     if (confirmDelete && !confirmDeleteAction(this, urls, true)) return;
 
-    FileOpsService::del(urls, this);
+    refreshPaneAfterJob(this, FileOpsService::del(urls, this));
 }
 
 void Pane::moveToTrash() {
@@ -1144,40 +1716,68 @@ void Pane::moveToTrash() {
     if (confirmDelete && !confirmDeleteAction(this, urls, false)) return;
 
     // Use KIO::trash for safe deletion (moves to trash)
-    FileOpsService::trash(urls, this);
+    refreshPaneAfterJob(this, FileOpsService::trash(urls, this));
 }
 
 void Pane::renameSelected() {
-    if (stack->currentWidget() == miller) {
-        miller->renameSelected();
+    const QUrl sourceUrl = primarySelectionUrl();
+    if (!sourceUrl.isValid() || !sourceUrl.isLocalFile()) {
         return;
     }
 
-    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
-    if (!v || !v->selectionModel()) return;
+    const QFileInfo sourceInfo(sourceUrl.toLocalFile());
+    const QString currentName = sourceInfo.fileName();
+    if (currentName.isEmpty()) {
+        return;
+    }
 
-    const QModelIndex current = v->selectionModel()->currentIndex();
-    if (!current.isValid()) return;
+    int selectionLength = currentName.size();
+    if (!sourceInfo.isDir()) {
+        const int extensionDot = currentName.lastIndexOf('.');
+        if (extensionDot > 0) {
+            selectionLength = extensionDot;
+        }
+    }
 
-    beginInlineRename(v, current);
+    QString newName;
+    if (!DialogUtils::promptTextInput(
+            this,
+            tr("Rename"),
+            tr("Enter a new name for \"%1\":").arg(currentName),
+            currentName,
+            &newName,
+            0,
+            selectionLength)) {
+        return;
+    }
+
+    if (newName.isEmpty() || newName == currentName) {
+        return;
+    }
+
+    if (newName == QStringLiteral(".") || newName == QStringLiteral("..") || newName.contains(QLatin1Char('/'))) {
+        QMessageBox::warning(this, tr("Invalid Name"), tr("That name is not valid for a file or folder."));
+        return;
+    }
+
+    const QUrl destinationUrl = QUrl::fromLocalFile(sourceInfo.dir().filePath(newName));
+    if (destinationUrl == sourceUrl) {
+        return;
+    }
+
+    KJob *job = FileOpsService::rename(sourceUrl, destinationUrl, this);
+    refreshPaneAfterJob(this, job);
+    connect(job, &KJob::result, this, [this, destinationUrl](KJob *finishedJob) {
+        if (!finishedJob->error()) {
+            selectUrlInActiveView(destinationUrl);
+        }
+    });
 }
 
 void Pane::beginInlineRename(QAbstractItemView *view, const QModelIndex &index) {
-    if (!view || !index.isValid()) return;
-    view->setCurrentIndex(index);
-    view->setEditTriggers(QAbstractItemView::AllEditTriggers);
-    view->edit(index);
-
-    // Connect to delegate's closeEditor to restore no-edit state when done
-    // Use a queued single-shot to avoid issues with multiple connections
-    QAbstractItemDelegate *delegate = view->itemDelegate();
-    if (delegate) {
-        // Disconnect any previous connections to avoid stacking
-        disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
-        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [view]() {
-            view->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        }, Qt::QueuedConnection);
-    }
+    Q_UNUSED(view)
+    Q_UNUSED(index)
+    renameSelected();
 }
 
 void Pane::createNewFolder() {
@@ -1196,88 +1796,53 @@ void Pane::createNewFolderIn(const QUrl &targetFolder) {
 
     const QString destinationPath = destinationUrl.toLocalFile();
 
-    // Create a uniquely named new folder
     QString baseName = "New Folder";
     QString folderName = baseName;
     int counter = 1;
-    
+
     QDir currentDir(destinationPath);
     while (currentDir.exists(folderName)) {
         folderName = QString("%1 %2").arg(baseName).arg(counter++);
     }
-    
-    QString newFolderPath = currentDir.filePath(folderName);
-    if (QDir().mkpath(newFolderPath)) {
-        // Refresh the directory listing to show the new folder
-        if (dirModel) {
-            if (auto *lister = dirModel->dirLister()) {
-                lister->updateDirectory(destinationUrl);
-            }
+
+    const QUrl newFolderUrl = QUrl::fromLocalFile(currentDir.filePath(folderName));
+    KJob *job = FileOpsService::mkdir(newFolderUrl, this);
+    refreshPaneAfterJob(this, job);
+    connect(job, &KJob::result, this, [this, destinationUrl, newFolderUrl](KJob *finishedJob) {
+        if (!finishedJob->error() && destinationUrl == currentRoot) {
+            selectUrlInActiveView(newFolderUrl);
         }
-        
-        if (proxy) {
-            proxy->invalidate();
-        }
-        
-        updateStatus();
-        
-        // Only attempt in-view selection when created in the active folder.
-        if (destinationUrl == currentRoot) {
-            QTimer::singleShot(100, this, [this, folderName]() {
-                if (proxy) {
-                    for (int i = 0; i < proxy->rowCount(); ++i) {
-                        QModelIndex idx = proxy->index(i, 0);
-                        QString fileName = idx.data(Qt::DisplayRole).toString();
-                        if (fileName == folderName) {
-                            if (auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
-                                view->setCurrentIndex(idx);
-                                view->scrollTo(idx);
-                            }
-                            break;
-                        }
-                    }
-                }
-            });
-        }
-    }
+    });
 }
 
 void Pane::goBack() {
     if (!canGoBack()) return;
-    
-    m_historyIndex--;
-    QUrl url = m_history[m_historyIndex];
-    
-    currentRoot = url;
-    
-    if (auto *l = dirModel->dirLister()) {
-        l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
-    }
-    if (miller) miller->setRootUrl(url);
-    syncNavigatorLocation(url);
+    applyLocation(m_navigationState.goBack(), true);
 }
 
 void Pane::goForward() {
     if (!canGoForward()) return;
-    
-    m_historyIndex++;
-    QUrl url = m_history[m_historyIndex];
-    
-    currentRoot = url;
-    
-    if (auto *l = dirModel->dirLister()) {
-        l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
-    }
-    if (miller) miller->setRootUrl(url);
-    syncNavigatorLocation(url);
+    applyLocation(m_navigationState.goForward(), true);
 }
 
 bool Pane::canGoBack() const {
-    return m_historyIndex > 0;
+    return m_navigationState.canGoBack();
 }
 
 bool Pane::canGoForward() const {
-    return m_historyIndex >= 0 && m_historyIndex < m_history.size() - 1;
+    return m_navigationState.canGoForward();
+}
+
+void Pane::refreshCurrentLocation() {
+    if (dirModel) {
+        if (auto *lister = dirModel->dirLister()) {
+            lister->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
+        }
+    }
+    if (proxy) {
+        proxy->invalidate();
+    }
+    updateStatus();
 }
 
 void Pane::generateThumbnail(const QUrl &url) const {
@@ -1335,6 +1900,10 @@ void Pane::generateThumbnail(const QUrl &url) const {
 
 QIcon Pane::getIconForFile(const QUrl &url) const {
     if (!url.isLocalFile()) return QIcon();
+
+    if (!m_showThumbnails) {
+        return QIcon();
+    }
     
     // Check if we have a thumbnail
     if (thumbs && thumbs->has(url)) {
@@ -1364,13 +1933,13 @@ QIcon Pane::getIconForFile(const QUrl &url) const {
 }
 
 void Pane::updateStatus() {
-    if (!proxy) return;
-
-    int totalFiles = proxy->rowCount();
     int selectedFiles = 0;
     qint64 selectedSize = 0;
+    int totalFiles = 0;
 
     if (stack->currentWidget() == miller) {
+        if (!proxy) return;
+        totalFiles = proxy->rowCount();
         const QList<QUrl> selected = miller->getSelectedUrls();
         selectedFiles = selected.size();
         for (const QUrl &url : selected) {
@@ -1382,6 +1951,13 @@ void Pane::updateStatus() {
         }
         emit statusChanged(totalFiles, selectedFiles, selectedSize);
         return;
+    }
+
+    if (stack->currentWidget() == searchResultsView) {
+        totalFiles = searchResultsModel ? searchResultsModel->rowCount() : 0;
+    } else {
+        if (!proxy) return;
+        totalFiles = proxy->rowCount();
     }
 
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
@@ -1406,15 +1982,12 @@ void Pane::updateStatus() {
 
 void Pane::openSelected() {
     if (stack->currentWidget() == miller) {
-        const QList<QUrl> urls = miller->getSelectedUrls();
-        if (urls.isEmpty()) return;
-
-        const QUrl url = urls.first();
+        const QUrl url = primarySelectionUrl();
         if (!url.isValid()) return;
 
         QFileInfo fi(url.toLocalFile());
         if (fi.isDir()) {
-            setRoot(url);
+            tryNavigateToDirectoryUrl(url, true);
         } else {
             FileOpsService::openUrl(url, this);
         }
@@ -1423,10 +1996,7 @@ void Pane::openSelected() {
         return;
     }
 
-    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
-    if (!v || !v->selectionModel()) return;
-
-    QModelIndex idx = v->currentIndex();
+    const QModelIndex idx = currentSelectionIndex();
     if (!idx.isValid()) return;
 
     onActivated(idx);
@@ -1443,6 +2013,8 @@ void Pane::focusView() {
     // Focus the current view widget
     if (stack->currentWidget() == miller) {
         miller->focusLastColumn();
+    } else if (stack->currentWidget() == searchResultsView && searchResultsView) {
+        searchResultsView->setFocus();
     } else if (auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
         view->setFocus();
     }
@@ -1458,7 +2030,7 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
         QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Space) {
             // Handle spacebar for QuickLook in all view modes
-            QModelIndex current = view->currentIndex();
+            const QModelIndex current = currentSelectionIndexForView(view);
             if (current.isValid()) {
                 QUrl url = urlForIndex(current);
                 if (url.isValid()) {
@@ -1469,26 +2041,26 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
         }
 
         if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
-            QModelIndex current = view->currentIndex();
+            const QModelIndex current = currentSelectionIndexForView(view);
             if (!current.isValid()) {
                 return true;
             }
 
-            if (keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
-                onActivated(current);  // Ctrl+Enter opens selection.
-            } else {
-                beginInlineRename(view, current);  // Return renames selection.
-            }
+        if (view == searchResultsView || keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
+            onActivated(current);  // Ctrl+Enter opens selection.
+        } else {
+            renameSelected();  // Return renames selection.
+        }
+        return true;
+    }
+
+    if (keyEvent->key() == Qt::Key_F2) {
+        const QModelIndex current = currentSelectionIndexForView(view);
+        if (current.isValid()) {
+            renameSelected();
             return true;
         }
-
-        if (keyEvent->key() == Qt::Key_F2) {
-            QModelIndex current = view->currentIndex();
-            if (current.isValid()) {
-                beginInlineRename(view, current);
-                return true;
-            }
-        }
+    }
 
         if (!keyEvent->modifiers().testFlag(Qt::ControlModifier)
             && !keyEvent->modifiers().testFlag(Qt::AltModifier)
@@ -1515,23 +2087,10 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     QMimeType mimeType = db.mimeTypeForFile(filePath);
     QString mimeTypeName = mimeType.name();
 
-    auto *dialog = new QDialog(
-        nullptr,
-        Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint
-    );
-    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
-    dialog->setWindowTitle(QString("Open %1 with...").arg(fi.fileName()));
-    dialog->setModal(true);
-    dialog->setWindowModality(Qt::ApplicationModal);
-    dialog->setFixedSize(520, 420);
+    auto *dialog = new QDialog;
+    DialogUtils::prepareModalDialog(dialog, window(), QString("Open %1 with...").arg(fi.fileName()), QSize(520, 420));
     dialog->setStyleSheet(
-        "QDialog { "
-            "background-color: rgba(42, 44, 49, 235); "
-            "color: #e8eaed; "
-            "border: 1px solid rgba(95, 102, 114, 200); "
-            "border-radius: 12px; "
-        "}"
-        "QLabel { color: #e8eaed; background: transparent; }"
+        DialogUtils::finderDialogStyleSheet() +
         "QListWidget { "
             "background-color: rgba(34, 36, 41, 240); "
             "color: #f5f7fa; "
@@ -1544,15 +2103,6 @@ void Pane::showOpenWithDialog(const QUrl &url) {
             "background-color: rgba(74, 144, 226, 210); "
             "color: #f5f7fa; "
         "}"
-        "QPushButton { "
-            "background-color: rgba(58, 62, 68, 235); "
-            "color: #e8eaed; "
-            "border: 1px solid #6f7785; "
-            "border-radius: 6px; "
-            "padding: 4px 12px; "
-        "}"
-        "QPushButton:hover { border-color: #8bbcff; }"
-        "QPushButton:pressed { background-color: rgba(72, 77, 85, 245); }"
     );
 
     auto *layout = new QVBoxLayout(dialog);
@@ -1682,160 +2232,305 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     connect(buttonBox, &QDialogButtonBox::rejected, dialog, &QDialog::close);
     connect(listWidget, &QListWidget::itemDoubleClicked, dialog, runSelection);
 
-    const QRect parentFrame = window()->frameGeometry();
-    const QPoint centeredTopLeft = parentFrame.center()
-        - QPoint(dialog->width() / 2, dialog->height() / 2);
-    dialog->move(centeredTopLeft);
-    dialog->show();
-    dialog->raise();
-    dialog->activateWindow();
-    listWidget->setFocus(Qt::OtherFocusReason);
+    DialogUtils::presentDialog(dialog, listWidget);
 }
 
 void Pane::compressSelected() {
     QList<QUrl> urls = getSelectedUrls();
     if (urls.isEmpty()) return;
-    
-    // Get the directory for output
-    QString outputDir = currentRoot.toLocalFile();
-    
-    // If single file/folder selected, suggest name based on it
-    QString suggestedName;
+
+    const QString outputDir = currentRoot.toLocalFile();
+    if (outputDir.isEmpty()) {
+        return;
+    }
+
+    QString suggestedBaseName;
     if (urls.size() == 1) {
         QFileInfo fi(urls.first().toLocalFile());
-        suggestedName = fi.baseName() + ".zip";
+        suggestedBaseName = stripKnownArchiveExtension(fi.fileName());
+        if (suggestedBaseName.isEmpty()) {
+            suggestedBaseName = fi.completeBaseName();
+        }
     } else {
-        suggestedName = QString("%1_files.zip").arg(urls.size());
+        suggestedBaseName = QString("%1_files").arg(urls.size());
     }
-    
-    bool ok;
-    QString archiveName = QInputDialog::getText(this, "Compress Files",
-                                               QString("Archive name (in %1):").arg(QFileInfo(outputDir).fileName()),
-                                               QLineEdit::Normal, suggestedName, &ok);
-    
-    if (!ok || archiveName.isEmpty()) return;
-    
-    // Ensure .zip extension
-    if (!archiveName.toLower().endsWith(".zip")) {
-        archiveName += ".zip";
+
+    const QList<ArchiveFormatOption> formatOptions = archiveFormatOptions();
+    const QString defaultExtension = ArchiveService::defaultArchiveExtension();
+    QString archiveName = suggestedBaseName + defaultExtension;
+
+    QDialog dialog(this);
+    dialog.setWindowFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
+    dialog.setWindowTitle(tr("Compress Files"));
+    dialog.setModal(true);
+    dialog.setWindowModality(Qt::ApplicationModal);
+    dialog.setFixedSize(460, 170);
+    dialog.setStyleSheet(
+        DialogUtils::finderDialogStyleSheet() +
+        QStringLiteral(
+            "QLineEdit, QComboBox { "
+                "background-color: rgba(74, 78, 86, 240); "
+                "color: #f5f7fa; "
+                "border: 1px solid #6f7785; "
+                "border-radius: 6px; "
+                "padding: 4px 8px; "
+            "}"
+            "QLineEdit:focus, QComboBox:focus { border-color: #6db3ff; }"
+            "QFormLayout QLabel { min-width: 110px; }"));
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *label = new QLabel(
+        tr("Create the archive in %1.\nSupported formats: %2")
+            .arg(QFileInfo(outputDir).fileName(), ArchiveService::supportedCreateFormatsHint()),
+        &dialog);
+    label->setWordWrap(true);
+    layout->addWidget(label);
+
+    auto *formLayout = new QFormLayout();
+    auto *nameEdit = new QLineEdit(archiveName, &dialog);
+    nameEdit->setSelection(0, archiveNameSelectionLength(archiveName));
+    auto *formatCombo = new QComboBox(&dialog);
+    for (const ArchiveFormatOption &option : formatOptions) {
+        formatCombo->addItem(option.label, option.extension);
     }
-    
-    QString archivePath = outputDir + "/" + archiveName;
-    
-    // Check if file exists
+    const int defaultFormatIndex = qMax(0, formatCombo->findData(defaultExtension));
+    formatCombo->setCurrentIndex(defaultFormatIndex);
+
+    formLayout->addRow(tr("Name:"), nameEdit);
+    formLayout->addRow(tr("Format:"), formatCombo);
+    layout->addLayout(formLayout);
+
+    auto updateArchiveNameForFormat = [nameEdit, formatCombo]() {
+        const QString extension = formatCombo->currentData().toString();
+        const QString baseName = stripKnownArchiveExtension(nameEdit->text().trimmed());
+        nameEdit->setText(baseName + extension);
+        nameEdit->setSelection(0, archiveNameSelectionLength(nameEdit->text()));
+    };
+    connect(formatCombo, &QComboBox::currentIndexChanged, &dialog, updateArchiveNameForFormat);
+
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(nameEdit, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
+    layout->addWidget(buttonBox);
+
+    if (QWidget *owner = dialog.parentWidget()) {
+        const QRect parentFrame = owner->window()->frameGeometry();
+        dialog.move(parentFrame.center() - QPoint(dialog.width() / 2, dialog.height() / 2));
+    }
+
+    QTimer::singleShot(0, &dialog, [nameEdit]() {
+        nameEdit->setFocus(Qt::OtherFocusReason);
+    });
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString selectedExtension = formatCombo->currentData().toString();
+    const QString archiveBaseName = stripKnownArchiveExtension(nameEdit->text().trimmed()).trimmed();
+    if (archiveBaseName.isEmpty()) {
+        QMessageBox::warning(this, tr("Invalid Name"), tr("That archive name is not valid."));
+        return;
+    }
+
+    archiveName = archiveBaseName + selectedExtension;
+    archiveName = archiveName.trimmed();
+    if (archiveName.isEmpty()) {
+        return;
+    }
+
+    if (archiveName == QStringLiteral(".") || archiveName == QStringLiteral("..")
+        || archiveName.contains(QLatin1Char('/')) || archiveName.contains(QLatin1Char('\\'))) {
+        QMessageBox::warning(this, tr("Invalid Name"), tr("That archive name is not valid."));
+        return;
+    }
+
+    const QString archivePath = QDir(outputDir).filePath(archiveName);
+    if (!ArchiveService::canCreateArchiveAtPath(archivePath)) {
+        QMessageBox::warning(
+            this,
+            tr("Unsupported Format"),
+            tr("Use one of these archive formats: %1.").arg(ArchiveService::supportedCreateFormatsHint()));
+        return;
+    }
+
     if (QFile::exists(archivePath)) {
         int ret = QMessageBox::question(this, "File Exists",
                                       QString("Archive '%1' already exists. Overwrite?").arg(archiveName),
                                       QMessageBox::Yes | QMessageBox::No);
         if (ret != QMessageBox::Yes) return;
     }
-    
-    // Build command to create zip archive
-    QStringList arguments;
-    arguments << "-r" << archivePath;
-    
-    for (const QUrl &url : urls) {
-        if (url.isLocalFile()) {
-            QString path = url.toLocalFile();
-            arguments << QFileInfo(path).fileName();
+
+    QProgressDialog *progress = createBusyProgressDialog(
+        this,
+        tr("Compressing"),
+        tr("Creating \"%1\"…").arg(archiveName));
+    ArchiveService *service = ArchiveService::createArchive(urls, archivePath, this);
+    connect(service, &ArchiveService::finished, this, [this, progress, archivePath, archiveName](bool success, const QString &errorMessage) {
+        progress->close();
+        progress->deleteLater();
+
+        if (!success) {
+            QMessageBox::warning(
+                this,
+                tr("Compression Failed"),
+                errorMessage.isEmpty()
+                    ? tr("Failed to create archive \"%1\".").arg(archiveName)
+                    : errorMessage);
+            return;
         }
-    }
-    
-    // Change to the directory containing the files
-    QProcess *process = new QProcess(this);
-    process->setWorkingDirectory(outputDir);
-    
-    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            [this, archiveName, process](int exitCode) {
-                if (exitCode == 0) {
-                    QMessageBox::information(this, "Compression Complete",
-                                           QString("Archive '%1' created successfully.").arg(archiveName));
-                    // Refresh the directory listing
-                    if (auto *l = dirModel->dirLister()) {
-                        l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
-                    }
-                } else {
-                    QMessageBox::warning(this, "Compression Failed",
-                                       QString("Failed to create archive '%1'.").arg(archiveName));
-                }
-                process->deleteLater();
-            });
-    
-    process->start("zip", arguments);
-    
-    if (!process->waitForStarted()) {
-        QMessageBox::warning(this, "Error", "Failed to start compression. Is 'zip' installed?");
-        process->deleteLater();
-    }
+
+        refreshCurrentLocation();
+        selectUrlInActiveView(QUrl::fromLocalFile(archivePath));
+    });
 }
 
 void Pane::extractArchive(const QUrl &archiveUrl) {
     if (!archiveUrl.isValid() || !archiveUrl.isLocalFile()) return;
-    
-    QString archivePath = archiveUrl.toLocalFile();
-    QFileInfo fi(archivePath);
-    QString outputDir = fi.absolutePath();
-    
-    // Ask user for extraction location
+
+    const QString archivePath = archiveUrl.toLocalFile();
+    const QFileInfo fi(archivePath);
+    const QString outputDir = fi.absolutePath();
+
     QString extractDir = QFileDialog::getExistingDirectory(this, "Extract to Directory",
-                                                          outputDir,
-                                                          QFileDialog::ShowDirsOnly);
+                                                           outputDir,
+                                                           QFileDialog::ShowDirsOnly);
     if (extractDir.isEmpty()) return;
-    
-    QString suffix = fi.suffix().toLower();
-    QStringList arguments;
-    QString command;
-    
-    // Choose appropriate extraction command based on file type
-    if (suffix == "zip") {
-        command = "unzip";
-        arguments << "-o" << archivePath << "-d" << extractDir;
-    } else if (suffix == "tar") {
-        command = "tar";
-        arguments << "-xf" << archivePath << "-C" << extractDir;
-    } else if (suffix == "gz" || suffix == "tgz") {
-        command = "tar";
-        arguments << "-xzf" << archivePath << "-C" << extractDir;
-    } else if (suffix == "bz2" || suffix == "tbz2") {
-        command = "tar";
-        arguments << "-xjf" << archivePath << "-C" << extractDir;
-    } else if (suffix == "xz" || suffix == "txz") {
-        command = "tar";
-        arguments << "-xJf" << archivePath << "-C" << extractDir;
-    } else if (suffix == "7z") {
-        command = "7z";
-        arguments << "x" << archivePath << "-o" + extractDir;
-    } else if (suffix == "rar") {
-        command = "unrar";
-        arguments << "x" << archivePath << extractDir;
-    } else {
-        QMessageBox::warning(this, "Unsupported Format",
-                           QString("Extraction of '%1' files is not supported.").arg(suffix.toUpper()));
+
+    runArchiveExtraction(archiveUrl, extractDir);
+}
+
+void Pane::extractArchiveHere(const QUrl &archiveUrl) {
+    if (!archiveUrl.isValid() || !archiveUrl.isLocalFile()) {
         return;
     }
-    
-    QProcess *process = new QProcess(this);
-    
-    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            [this, fi, extractDir, process](int exitCode) {
-                if (exitCode == 0) {
-                    QMessageBox::information(this, "Extraction Complete",
-                                           QString("Archive '%1' extracted successfully to '%2'.")
-                                           .arg(fi.fileName()).arg(extractDir));
-                } else {
-                    QMessageBox::warning(this, "Extraction Failed",
-                                       QString("Failed to extract archive '%1'.").arg(fi.fileName()));
-                }
-                process->deleteLater();
-            });
-    
-    process->start(command, arguments);
-    
-    if (!process->waitForStarted()) {
-        QMessageBox::warning(this, "Error", 
-                           QString("Failed to start extraction. Is '%1' installed?").arg(command));
-        process->deleteLater();
+
+    const QFileInfo fi(archiveUrl.toLocalFile());
+    runArchiveExtraction(archiveUrl, fi.absolutePath());
+}
+
+void Pane::extractArchiveToNewFolder(const QUrl &archiveUrl) {
+    if (!archiveUrl.isValid() || !archiveUrl.isLocalFile()) {
+        return;
     }
+
+    const QFileInfo fi(archiveUrl.toLocalFile());
+    const QString baseFolderName = stripKnownArchiveExtension(fi.fileName());
+    const QString extractDir = uniqueChildPath(fi.absolutePath(), baseFolderName);
+    runArchiveExtraction(archiveUrl, extractDir, QUrl::fromLocalFile(extractDir));
+}
+
+void Pane::runArchiveExtraction(const QUrl &archiveUrl, const QString &extractDir, const QUrl &selectUrlOnSuccess) {
+    if (!archiveUrl.isValid() || !archiveUrl.isLocalFile()) {
+        return;
+    }
+
+    const QString archivePath = archiveUrl.toLocalFile();
+    const QFileInfo fi(archivePath);
+
+    if (!ArchiveService::canExtractArchive(archivePath)) {
+        QMessageBox::warning(this, "Unsupported Format",
+                           tr("That archive format is not supported here yet."));
+        return;
+    }
+
+    ArchiveService::ExtractConflictPolicy conflictPolicy = ArchiveService::ExtractConflictPolicy::KeepExisting;
+    if (ArchiveService::canPreviewExtractionConflicts(archivePath)) {
+        QString conflictError;
+        const QStringList conflicts = ArchiveService::listExtractionConflicts(archiveUrl, extractDir, &conflictError);
+        if (!conflictError.isEmpty()) {
+            QMessageBox::warning(
+                this,
+                tr("Extraction Failed"),
+                conflictError);
+            return;
+        }
+
+        if (!conflicts.isEmpty()) {
+            QMessageBox conflictDialog(this);
+            conflictDialog.setIcon(QMessageBox::Warning);
+            conflictDialog.setWindowTitle(tr("Files Already Exist"));
+            conflictDialog.setText(
+                tr("%1 item(s) from \"%2\" already exist in \"%3\".")
+                    .arg(conflicts.size())
+                    .arg(fi.fileName(), QDir::toNativeSeparators(extractDir)));
+            conflictDialog.setInformativeText(
+                tr("Choose whether to replace the existing items or extract into a new folder instead."));
+            conflictDialog.setDetailedText(conflicts.join(QLatin1Char('\n')));
+
+            auto *newFolderButton = conflictDialog.addButton(tr("Extract to New Folder"), QMessageBox::AcceptRole);
+            auto *replaceButton = conflictDialog.addButton(tr("Replace Existing"), QMessageBox::DestructiveRole);
+            auto *cancelButton = conflictDialog.addButton(QMessageBox::Cancel);
+            conflictDialog.setDefaultButton(newFolderButton);
+
+            const QString previewText = summarizeConflictPaths(conflicts);
+            if (!previewText.isEmpty()) {
+                conflictDialog.setInformativeText(
+                    tr("Choose whether to replace the existing items or extract into a new folder instead.\n\n%1")
+                        .arg(previewText));
+            }
+
+            conflictDialog.exec();
+
+            if (conflictDialog.clickedButton() == cancelButton) {
+                return;
+            }
+            if (conflictDialog.clickedButton() == newFolderButton) {
+                const QString baseFolderName = stripKnownArchiveExtension(fi.fileName());
+                const QString alternateExtractDir = uniqueChildPath(extractDir, baseFolderName);
+                runArchiveExtraction(archiveUrl, alternateExtractDir, QUrl::fromLocalFile(alternateExtractDir));
+                return;
+            }
+            if (conflictDialog.clickedButton() == replaceButton) {
+                conflictPolicy = ArchiveService::ExtractConflictPolicy::ReplaceExisting;
+            } else {
+                return;
+            }
+        }
+    }
+
+    QProgressDialog *progress = createBusyProgressDialog(
+        this,
+        tr("Extracting"),
+        tr("Extracting \"%1\"…").arg(fi.fileName()));
+    ArchiveService *service = ArchiveService::extractArchive(archiveUrl, extractDir, conflictPolicy, this);
+    connect(service, &ArchiveService::finished, this, [this, progress, fi, extractDir, selectUrlOnSuccess](bool success, const QString &errorMessage) {
+        progress->close();
+        progress->deleteLater();
+
+        if (!success) {
+            QMessageBox::warning(
+                this,
+                tr("Extraction Failed"),
+                errorMessage.isEmpty()
+                    ? tr("Failed to extract archive \"%1\".").arg(fi.fileName())
+                    : errorMessage);
+            return;
+        }
+
+        const QString cleanExtractDir = QDir::cleanPath(extractDir);
+        const QString cleanCurrentRoot = QDir::cleanPath(currentRoot.toLocalFile());
+        if (cleanExtractDir == cleanCurrentRoot) {
+            refreshCurrentLocation();
+            return;
+        }
+
+        if (selectUrlOnSuccess.isValid() && selectUrlOnSuccess.isLocalFile()) {
+            const QString selectedPath = QDir::cleanPath(selectUrlOnSuccess.toLocalFile());
+            const QString selectedParent = QDir::cleanPath(QFileInfo(selectedPath).absolutePath());
+            if (selectedParent == cleanCurrentRoot) {
+                refreshCurrentLocation();
+                selectUrlInActiveView(selectUrlOnSuccess);
+                return;
+            }
+        }
+
+        QMessageBox::information(
+            this,
+            tr("Extraction Complete"),
+            tr("Extracted \"%1\" to \"%2\".").arg(fi.fileName(), extractDir));
+    });
 }
 
 void Pane::duplicateSelected() {
@@ -1914,7 +2609,7 @@ void Pane::duplicateSelected() {
         }
 
         const auto op = state->ops.at(state->index++);
-        KIO::CopyJob *job = KIO::copyAs(op.first, op.second, KIO::HideProgressInfo);
+        KIO::CopyJob *job = FileOpsService::copyAs(op.first, op.second, this);
         connect(job, &KJob::result, this, [state, runNext](KJob *finishedJob) {
             if (finishedJob->error()) {
                 state->failures++;

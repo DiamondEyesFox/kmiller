@@ -1,0 +1,2 @@
+/opt/kmiller/versions/<version>/patchnotes/
+    patchnotes-<version>.md

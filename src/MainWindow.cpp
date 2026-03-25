@@ -1,5 +1,6 @@
 // Local headers
 #include "MainWindow.h"
+#include "DialogUtils.h"
 #include "Pane.h"
 #include "SettingsDialog.h"
 
@@ -31,6 +32,8 @@
 #include <QStatusBar>
 #include <QTabBar>
 #include <QVBoxLayout>
+
+#include <KIO/FileUndoManager>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     resize(1500, 900);
@@ -133,6 +136,38 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(placesView, &KFilePlacesView::urlChanged, this, &MainWindow::placeActivated);
 
     buildMenus();
+
+    auto *undoManager = KIO::FileUndoManager::self();
+    connect(undoManager, &KIO::FileUndoManager::undoAvailable, this, [this](bool available) {
+        if (actUndo) {
+            actUndo->setEnabled(available);
+        }
+    });
+    connect(undoManager, &KIO::FileUndoManager::redoAvailable, this, [this](bool available) {
+        if (actRedo) {
+            actRedo->setEnabled(available);
+        }
+    });
+    connect(undoManager, &KIO::FileUndoManager::undoTextChanged, this, [this](const QString &text) {
+        if (actUndo) {
+            actUndo->setText(text.isEmpty() ? QStringLiteral("Undo") : text);
+        }
+    });
+    connect(undoManager, &KIO::FileUndoManager::redoTextChanged, this, [this](const QString &text) {
+        if (actRedo) {
+            actRedo->setText(text.isEmpty() ? QStringLiteral("Redo") : text);
+        }
+    });
+    connect(undoManager, &KIO::FileUndoManager::undoJobFinished, this, &MainWindow::refreshAllPanes);
+
+    if (actUndo) {
+        actUndo->setEnabled(undoManager->isUndoAvailable());
+        actUndo->setText(undoManager->undoText().isEmpty() ? QStringLiteral("Undo") : undoManager->undoText());
+    }
+    if (actRedo) {
+        actRedo->setEnabled(undoManager->isRedoAvailable());
+        actRedo->setText(undoManager->redoText().isEmpty() ? QStringLiteral("Redo") : undoManager->redoText());
+    }
     
     // Setup status bar
     statusLabel = new QLabel("Ready");
@@ -177,6 +212,16 @@ void MainWindow::buildMenus() {
     connect(actPrefs, &QAction::triggered, this, &MainWindow::openPreferences);
 
     auto edit = menuBar()->addMenu("&Edit");
+    actUndo = edit->addAction("Undo");
+    actUndo->setShortcut(QKeySequence::Undo);
+    connect(actUndo, &QAction::triggered, this, &MainWindow::undoLastFileOperation);
+
+    actRedo = edit->addAction("Redo");
+    actRedo->setShortcut(QKeySequence::Redo);
+    connect(actRedo, &QAction::triggered, this, &MainWindow::redoLastFileOperation);
+
+    edit->addSeparator();
+
     auto *actCut = edit->addAction("Cut");
     actCut->setShortcut(QKeySequence::Cut);
     connect(actCut, &QAction::triggered, this, [this]{ if (auto p=currentPane()) p->cutSelected(); });
@@ -334,6 +379,10 @@ void MainWindow::addInitialTab(const QUrl &url) {
     QSettings settings;
     p->setShowHiddenFiles(actShowHidden->isChecked());
     p->setPreviewVisible(actPreviewPane->isChecked());
+    p->setShowThumbnails(settings.value("view/showThumbnails", true).toBool());
+    p->setShowFileExtensions(settings.value("view/showFileExtensions", true).toBool());
+    p->setMillerColumnWidth(settings.value("view/millerColumnWidth", 200).toInt());
+    p->setFollowSymlinks(settings.value("advanced/followSymlinks", false).toBool());
     p->setViewMode(settings.value("general/defaultView", 3).toInt());
     p->setZoomValue(globalZoomSlider->value());
 }
@@ -355,6 +404,28 @@ void MainWindow::closeCurrentTab() {
         delete w;
         if (tabs->count()==0) newTab();
     }
+}
+
+void MainWindow::undoLastFileOperation() {
+    auto *undoManager = KIO::FileUndoManager::self();
+    if (!undoManager->isUndoAvailable()) {
+        return;
+    }
+    if (auto *ui = undoManager->uiInterface()) {
+        ui->setParentWidget(this);
+    }
+    undoManager->undo();
+}
+
+void MainWindow::redoLastFileOperation() {
+    auto *undoManager = KIO::FileUndoManager::self();
+    if (!undoManager->isRedoAvailable()) {
+        return;
+    }
+    if (auto *ui = undoManager->uiInterface()) {
+        ui->setParentWidget(this);
+    }
+    undoManager->redo();
 }
 
 void MainWindow::placeActivated(const QUrl &url) { if (auto *p = currentPane()) p->setUrl(url); }
@@ -398,6 +469,12 @@ QList<Pane*> MainWindow::allPanes() const {
         }
     }
     return panes;
+}
+
+void MainWindow::refreshAllPanes() {
+    for (Pane *pane : allPanes()) {
+        pane->refreshCurrentLocation();
+    }
 }
 
 static QString formatSize(qint64 size) {
@@ -459,6 +536,10 @@ void MainWindow::loadSettings() {
     
     // Load icon size used by status bar zoom slider and pane icon scaling.
     int iconSize = settings.value("view/iconSize", 64).toInt();
+    bool showThumbnails = settings.value("view/showThumbnails", true).toBool();
+    bool showFileExtensions = settings.value("view/showFileExtensions", true).toBool();
+    int millerColumnWidth = settings.value("view/millerColumnWidth", 200).toInt();
+    bool followSymlinks = settings.value("advanced/followSymlinks", false).toBool();
     globalZoomSlider->blockSignals(true);
     globalZoomSlider->setValue(iconSize);
     globalZoomSlider->blockSignals(false);
@@ -466,6 +547,10 @@ void MainWindow::loadSettings() {
     for (Pane *p : allPanes()) {
         p->setShowHiddenFiles(showHidden);
         p->setPreviewVisible(showPreview);
+        p->setShowThumbnails(showThumbnails);
+        p->setShowFileExtensions(showFileExtensions);
+        p->setMillerColumnWidth(millerColumnWidth);
+        p->setFollowSymlinks(followSymlinks);
         p->setViewMode(defaultView);
         p->setZoomValue(iconSize);
     }
@@ -740,7 +825,7 @@ void MainWindow::showAbout() {
 
     // Description
     auto *descLabel = new QLabel(
-        "<p align='center'><b>Finder-style File Manager</b></p>"
+        "<p align='center'><b>Finder-style File Manager for Linux</b></p>"
         "<p align='center'>A modern file manager with Miller columns, QuickLook preview, "
         "and comprehensive file operations.</p>"
     );
@@ -760,7 +845,7 @@ void MainWindow::showAbout() {
         "<li>Archive support (compress & extract)</li>"
         "<li>Smart file type detection and icons</li>"
         "<li>Customizable settings and preferences</li>"
-        "<li>KDE Frameworks integration</li>"
+        "<li>Linux desktop integration</li>"
         "</ul>"
     );
     featuresLabel->setWordWrap(true);
@@ -771,7 +856,7 @@ void MainWindow::showAbout() {
     // Credits and info
     auto *infoLabel = new QLabel(
         "<p align='center'><small>"
-        "Built with Qt6 and KDE Frameworks<br/>"
+        "Built for Linux with Qt6 and KDE Frameworks<br/>"
         "System: Linux • Architecture: x86_64<br/>"
         "Installation: /opt/kmiller/versions/" + QString(KMILLER_VERSION_STR) + "/"
         "</small></p>"
@@ -799,23 +884,10 @@ void MainWindow::showAbout() {
 }
 
 void MainWindow::goToFolder() {
-    auto *dialog = new QDialog(
-        nullptr,
-        Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint
-    );
-    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
-    dialog->setWindowTitle("Go to Folder");
-    dialog->setModal(true);
-    dialog->setWindowModality(Qt::ApplicationModal);
-    dialog->setFixedSize(450, 120);
+    auto *dialog = new QDialog;
+    DialogUtils::prepareModalDialog(dialog, this, "Go to Folder", QSize(450, 120));
     dialog->setStyleSheet(
-        "QDialog { "
-            "background-color: rgba(42, 44, 49, 235); "
-            "color: #e8eaed; "
-            "border: 1px solid rgba(95, 102, 114, 200); "
-            "border-radius: 12px; "
-        "}"
-        "QLabel { color: #e8eaed; background: transparent; }"
+        DialogUtils::finderDialogStyleSheet() +
         "QLineEdit { "
             "background-color: rgba(74, 78, 86, 240); "
             "color: #f5f7fa; "
@@ -825,15 +897,6 @@ void MainWindow::goToFolder() {
             "selection-background-color: #4a90e2; "
         "}"
         "QLineEdit:focus { border-color: #6db3ff; }"
-        "QPushButton { "
-            "background-color: rgba(58, 62, 68, 235); "
-            "color: #e8eaed; "
-            "border: 1px solid #6f7785; "
-            "border-radius: 6px; "
-            "padding: 4px 12px; "
-        "}"
-        "QPushButton:hover { border-color: #8bbcff; }"
-        "QPushButton:pressed { background-color: rgba(72, 77, 85, 245); }"
     );
     auto *layout = new QVBoxLayout(dialog);
 
@@ -898,12 +961,5 @@ void MainWindow::goToFolder() {
     connect(closeOnCtrlL, &QShortcut::activated, dialog, &QDialog::close);
     connect(closeOnCtrlShiftG, &QShortcut::activated, dialog, &QDialog::close);
 
-    const QRect parentFrame = frameGeometry();
-    const QPoint centeredTopLeft = parentFrame.center()
-        - QPoint(dialog->width() / 2, dialog->height() / 2);
-    dialog->move(centeredTopLeft);
-    dialog->show();
-    dialog->raise();
-    dialog->activateWindow();
-    lineEdit->setFocus(Qt::OtherFocusReason);
+    DialogUtils::presentDialog(dialog, lineEdit);
 }

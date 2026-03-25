@@ -3,6 +3,17 @@
 ## Version 5.25 (Current)
 **Released: December 2025**
 
+### Improvements
+✨ **Native Archive Backend**: Common archive create/extract flows now use `KArchive` instead of shelling out to external tools
+- Added built-in support for `.zip`, `.7z`, `.tar`, `.tar.gz`, `.tar.bz2`, and `.tar.xz`
+- Archive operations now run off the UI thread with a real progress dialog instead of blocking process wrappers
+- Compression now lets you choose the archive format explicitly instead of forcing `.zip`
+- Archive context menus now offer `Extract Here`, `Extract to New Folder`, and `Extract To...`
+- Extraction now preflights built-in archive contents and asks before replacing existing files
+- Search now shows recursive results for the current folder tree instead of only filtering the open directory
+- Properties now calculate folder sizes in the background for single folders and multi-selection summaries
+- `rar` remains extract-only and uses `7z` or `unrar` as a narrow fallback when available
+
 ### Bug Fixes
 🐛 **FileChooser URI Return**: Fixed file picker not returning selected file URIs to applications
 - Dialog was returning folder URL instead of selected file URLs
@@ -79,7 +90,7 @@ systemctl --user restart xdg-desktop-portal
 - Preview pane (images, PDF, text)
 - Multi-view modes (Icons, Details, Compact, Miller)
 - Full file operations (copy, cut, paste, delete, rename, duplicate)
-- KDE Frameworks integration
+- Linux desktop integration
 - Thumbnail caching
 
 ---
@@ -90,9 +101,9 @@ Development versions establishing core functionality.
 ---
 
 ## System Requirements
-- **OS**: Linux (KDE/Qt6 recommended)
+- **OS**: Linux
 - **Dependencies**: Qt6 (Widgets, Multimedia, DBus), KDE Frameworks 6, Poppler-Qt6
-- **Optional**: zip/unzip, tar, 7z, unrar for archive support
+- **Optional**: `7z` or `unrar` for `rar` extraction fallback
 
 ## Installation
 KMiller uses versioned installation in `/opt/kmiller/versions/` with symlinks for easy rollback.

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${1:-$PWD}"
+VERSION="${2:-}"
+cd "$ROOT"
+
+if [[ -z "${VERSION}" ]]; then
+  echo "Usage: tools/build_release.sh <project-root> <version>"; exit 1
+fi
+
+# Log only to file (quiet terminal)
+exec >build.log 2>&1
+
+echo "[build] version: ${VERSION}"
+rm -rf build
+mkdir -p build
+cd build
+echo "[build] cmake configure"
+cmake -DKMILLER_VERSION="${VERSION}" ..
+echo "[build] make -j2"
+make -j2
+echo "[build] sudo make install"
+sudo make install
+cd "$ROOT"
+
+# Generate patch notes
+./tools/make_patchnotes.sh "$ROOT" "${VERSION}"
+
+# Commit notes and tag version (best effort)
+git add docs/patchnotes/"${VERSION}.md" || true
+git commit -m "notes: ${VERSION}" || true
+git tag -f "v${VERSION}" || true
+
+# Reinstall to ensure notes copied/symlinked
+cd build
+sudo make install
+echo "[done] Installed KMiller ${VERSION} with patch notes."

@@ -1,0 +1,12 @@
+packaging/
+  config/
+    config.xml
+  packages/
+    com.kmiller.core/
+      meta/
+        package.xml
+        installscript.qs
+      data/
+        kmiller-<version>-linux-x86_64/
+          bin/kmiller            # your built binary
+          share/applications/kmiller.desktop

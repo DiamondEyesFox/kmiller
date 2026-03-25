@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=KMiller
+GenericName=File Manager
+Comment=Finder-style file manager with Miller Columns and Quick Look
+Exec=kmiller %U
+Icon=kmiller
+Terminal=false
+Categories=Qt;KDE;Utility;FileManager;
+MimeType=inode/directory;

@@ -24,6 +24,7 @@ private slots:
     void applyChanges();
 
 private:
+    bool applyChangesImpl();
     void setupUI();
     void setupGeneralTab();
     void setupPermissionsTab();

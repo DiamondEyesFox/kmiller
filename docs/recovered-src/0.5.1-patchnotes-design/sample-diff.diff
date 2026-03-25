@@ -1,0 +1,6 @@
+--- src/Pane.cpp (old)
++++ src/Pane.cpp (new)
+@@
+-    connect(miller, &MillerView::contextMenuRequested, this, &Pane::showContextMenu);
++    connect(miller, &MillerView::contextMenuRequested, this,
++        [this](const QUrl &u, const QPoint &g){ showContextMenu(g,u); });

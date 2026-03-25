@@ -1,0 +1,4 @@
+/opt/kmiller/versions/0.4.6/bin/kmiller
+/opt/kmiller/versions/0.4.6/src/... (all .h/.cpp)
+/opt/kmiller/versions/0.4.6/CMakeLists.txt
+/opt/kmiller/versions/0.4.6/source-0.4.6.tar.gz

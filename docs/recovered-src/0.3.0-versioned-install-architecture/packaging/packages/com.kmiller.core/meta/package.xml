@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package>
+  <DisplayName>KMiller Core</DisplayName>
+  <Description>Finder-style file manager with Miller Columns & Quick Look</Description>
+  <Version>@APP_VERSION@</Version>
+  <ReleaseDate>@TODAY@</ReleaseDate>
+  <Default>true</Default>
+  <ForcedInstallation>true</ForcedInstallation>
+  <RequiresAdminRights>true</RequiresAdminRights>
+</Package>

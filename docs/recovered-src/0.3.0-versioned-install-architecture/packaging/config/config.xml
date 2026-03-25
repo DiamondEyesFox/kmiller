@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Installer>
+    <Name>KMiller</Name>
+    <Version>1.0</Version>
+    <Title>KMiller Installer</Title>
+    <Publisher>KMiller</Publisher>
+    <StartMenuDir>KMiller</StartMenuDir>
+    <TargetDir>@RootDir@</TargetDir>
+</Installer>

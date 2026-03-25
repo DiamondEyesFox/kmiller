@@ -1,4 +1,5 @@
 #include "PropertiesDialog.h"
+#include "FileOpsService.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -16,7 +17,57 @@
 #include <QFileIconProvider>
 #include <QMessageBox>
 #include <QApplication>
+#include <QEventLoop>
+#include <QFutureWatcher>
+#include <QDirIterator>
+#include <QLocale>
 #include <QStyle>
+#include <QtConcurrent/QtConcurrentRun>
+#include <KJob>
+#include <KIO/SimpleJob>
+
+namespace {
+
+QString formatBytes(qint64 size) {
+    const QStringList units = {"bytes", "KB", "MB", "GB", "TB"};
+    double value = static_cast<double>(qMax<qint64>(0, size));
+    int unitIndex = 0;
+    while (value >= 1024.0 && unitIndex < units.size() - 1) {
+        value /= 1024.0;
+        ++unitIndex;
+    }
+
+    if (unitIndex == 0) {
+        return QString("%1 %2").arg(static_cast<qint64>(value)).arg(units[unitIndex]);
+    }
+    return QString("%1 %2").arg(value, 0, 'f', 1).arg(units[unitIndex]);
+}
+
+QString formatSizeLabel(qint64 size) {
+    return PropertiesDialog::tr("%1 (%2 bytes)")
+        .arg(formatBytes(size))
+        .arg(QLocale().toString(size));
+}
+
+qint64 computeDirectorySizeBytes(const QString &dirPath) {
+    qint64 totalSize = 0;
+    QDirIterator it(
+        dirPath,
+        QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks | QDir::Hidden | QDir::System,
+        QDirIterator::Subdirectories
+    );
+
+    while (it.hasNext()) {
+        it.next();
+        const QFileInfo fi = it.fileInfo();
+        if (fi.isFile()) {
+            totalSize += fi.size();
+        }
+    }
+    return totalSize;
+}
+
+} // namespace
 
 PropertiesDialog::PropertiesDialog(const QUrl &url, QWidget *parent)
     : QDialog(parent), m_url(url), m_multipleFiles(false)
@@ -61,6 +112,11 @@ void PropertiesDialog::setupUI() {
     m_okButton = new QPushButton(tr("OK"), this);
     m_cancelButton = new QPushButton(tr("Cancel"), this);
     m_applyButton = new QPushButton(tr("Apply"), this);
+
+    if (m_multipleFiles) {
+        m_okButton->setText(tr("Close"));
+        m_applyButton->setEnabled(false);
+    }
     
     buttonLayout->addWidget(m_okButton);
     buttonLayout->addWidget(m_cancelButton);
@@ -69,7 +125,11 @@ void PropertiesDialog::setupUI() {
     mainLayout->addLayout(buttonLayout);
     
     // Connections
-    connect(m_okButton, &QPushButton::clicked, this, [this]{ applyChanges(); accept(); });
+    connect(m_okButton, &QPushButton::clicked, this, [this]{
+        if (applyChangesImpl()) {
+            accept();
+        }
+    });
     connect(m_cancelButton, &QPushButton::clicked, this, &QDialog::reject);
     connect(m_applyButton, &QPushButton::clicked, this, &PropertiesDialog::applyChanges);
 }
@@ -218,23 +278,25 @@ void PropertiesDialog::loadFileInfo() {
     m_typeLabel->setText(typeStr);
     
     // Size
-    QString sizeStr;
     if (info.isDir()) {
-        sizeStr = tr("Calculating...");
-        // TODO: Calculate directory size in background
+        m_sizeLabel->setText(tr("Calculating folder size..."));
+        m_sizeLabel->setToolTip(QString());
+
+        auto *watcher = new QFutureWatcher<qint64>(this);
+        connect(watcher, &QFutureWatcher<qint64>::finished, this, [this, watcher]() {
+            const qint64 size = watcher->result();
+            m_sizeLabel->setText(formatSizeLabel(size));
+            m_sizeLabel->setToolTip(QLocale().toString(size));
+            watcher->deleteLater();
+        });
+        watcher->setFuture(QtConcurrent::run([path]() {
+            return computeDirectorySizeBytes(path);
+        }));
     } else {
-        qint64 size = info.size();
-        if (size < 1024) {
-            sizeStr = tr("%1 bytes").arg(size);
-        } else if (size < 1024 * 1024) {
-            sizeStr = tr("%1 KB").arg(size / 1024.0, 0, 'f', 1);
-        } else if (size < 1024 * 1024 * 1024) {
-            sizeStr = tr("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 1);
-        } else {
-            sizeStr = tr("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 1);
-        }
+        const qint64 size = info.size();
+        m_sizeLabel->setText(formatSizeLabel(size));
+        m_sizeLabel->setToolTip(QLocale().toString(size));
     }
-    m_sizeLabel->setText(sizeStr);
     
     // Location
     m_locationLabel->setText(info.absolutePath());
@@ -270,7 +332,8 @@ void PropertiesDialog::loadMultipleFilesInfo() {
     m_nameEdit->setReadOnly(true);
     
     // Calculate total size and common properties
-    qint64 totalSize = 0;
+    qint64 directFileSize = 0;
+    QStringList directoryPaths;
     int fileCount = 0, folderCount = 0;
     
     for (const QUrl &url : m_urls) {
@@ -280,9 +343,10 @@ void PropertiesDialog::loadMultipleFilesInfo() {
         
         if (info.isDir()) {
             folderCount++;
+            directoryPaths.append(info.absoluteFilePath());
         } else {
             fileCount++;
-            totalSize += info.size();
+            directFileSize += info.size();
         }
     }
     
@@ -298,17 +362,28 @@ void PropertiesDialog::loadMultipleFilesInfo() {
     m_typeLabel->setText(typeStr);
     
     // Size
-    QString sizeStr;
-    if (totalSize < 1024) {
-        sizeStr = tr("%1 bytes").arg(totalSize);
-    } else if (totalSize < 1024 * 1024) {
-        sizeStr = tr("%1 KB").arg(totalSize / 1024.0, 0, 'f', 1);
-    } else if (totalSize < 1024 * 1024 * 1024) {
-        sizeStr = tr("%1 MB").arg(totalSize / (1024.0 * 1024.0), 0, 'f', 1);
+    if (directoryPaths.isEmpty()) {
+        m_sizeLabel->setText(formatSizeLabel(directFileSize));
+        m_sizeLabel->setToolTip(QLocale().toString(directFileSize));
     } else {
-        sizeStr = tr("%1 GB").arg(totalSize / (1024.0 * 1024.0 * 1024.0), 0, 'f', 1);
+        m_sizeLabel->setText(tr("Calculating selected folder sizes..."));
+        m_sizeLabel->setToolTip(QString());
+
+        auto *watcher = new QFutureWatcher<qint64>(this);
+        connect(watcher, &QFutureWatcher<qint64>::finished, this, [this, watcher]() {
+            const qint64 size = watcher->result();
+            m_sizeLabel->setText(formatSizeLabel(size));
+            m_sizeLabel->setToolTip(QLocale().toString(size));
+            watcher->deleteLater();
+        });
+        watcher->setFuture(QtConcurrent::run([directFileSize, directoryPaths]() {
+            qint64 totalSize = directFileSize;
+            for (const QString &dirPath : directoryPaths) {
+                totalSize += computeDirectorySizeBytes(dirPath);
+            }
+            return totalSize;
+        }));
     }
-    m_sizeLabel->setText(sizeStr);
     
     // Disable fields that don't make sense for multiple files
     m_locationLabel->setText(tr("Multiple locations"));
@@ -332,12 +407,16 @@ void PropertiesDialog::loadMultipleFilesInfo() {
 }
 
 void PropertiesDialog::applyChanges() {
+    applyChangesImpl();
+}
+
+bool PropertiesDialog::applyChangesImpl() {
     if (m_multipleFiles) {
         // TODO: Handle bulk rename if needed
-        return;
+        return true;
     }
     
-    if (!m_url.isLocalFile()) return;
+    if (!m_url.isLocalFile()) return false;
     
     QString path = m_url.toLocalFile();
     QFileInfo info(path);
@@ -345,15 +424,25 @@ void PropertiesDialog::applyChanges() {
     // Rename if name changed
     QString newName = m_nameEdit->text();
     if (newName != info.fileName() && !newName.isEmpty()) {
-        QString newPath = info.absolutePath() + "/" + newName;
-        QDir dir;
-        if (!dir.rename(path, newPath)) {
-            QMessageBox::warning(this, tr("Error"), tr("Failed to rename file"));
-            return;
+        if (newName == QStringLiteral(".") || newName == QStringLiteral("..") || newName.contains(QLatin1Char('/'))) {
+            QMessageBox::warning(this, tr("Error"), tr("That name is not valid for a file or folder."));
+            return false;
         }
+
+        QString newPath = info.absolutePath() + "/" + newName;
+        QEventLoop loop;
+        KJob *job = FileOpsService::rename(m_url, QUrl::fromLocalFile(newPath), this);
+        connect(job, &KJob::result, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        if (job->error()) {
+            return false;
+        }
+
         // Update our URL for permission changes
         m_url = QUrl::fromLocalFile(newPath);
         path = newPath;
+        info.setFile(path);
     }
     
     // Apply permissions
@@ -371,5 +460,9 @@ void PropertiesDialog::applyChanges() {
     QFile file(path);
     if (!file.setPermissions(perms)) {
         QMessageBox::warning(this, tr("Error"), tr("Failed to change permissions"));
+        return false;
     }
+
+    loadFileInfo();
+    return true;
 }

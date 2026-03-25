@@ -1,19 +1,111 @@
 #include "MillerView.h"
 #include "FileOpsService.h"
+#include "ThumbCache.h"
 #include <memory>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFileIconProvider>
 #include <QFileSystemModel>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QImageReader>
 #include <QKeyEvent>
 #include <QPointer>
 #include <QAbstractItemDelegate>
+#include <QStandardPaths>
+#include <QStyleOptionViewItem>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QListView>
+#include <QMessageBox>
+
+static bool isMillerImageFile(const QString &path) {
+    const QByteArray fmt = QImageReader::imageFormat(path);
+    return !fmt.isEmpty();
+}
+
+static bool supportsMillerThumbnailPreview(const QString &path) {
+    QFileInfo fi(path);
+    return isMillerImageFile(path) || fi.suffix().compare("pdf", Qt::CaseInsensitive) == 0;
+}
+
+static QString millerThumbnailPath(const QUrl &url) {
+    QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (cacheDir.isEmpty()) cacheDir = QDir::homePath() + "/.cache";
+
+    QDir dir(cacheDir + "/kmiller/thumbs");
+    if (!dir.exists()) dir.mkpath(dir.absolutePath());
+
+    const QString hash = QString(QCryptographicHash::hash(url.toString().toUtf8(), QCryptographicHash::Md5).toHex());
+    return dir.absoluteFilePath(hash + ".png");
+}
+
+static QString millerDisplayNameForFileInfo(const QFileInfo &fi, bool showFileExtensions) {
+    const QString fileName = fi.fileName();
+    if (showFileExtensions || fi.isDir()) {
+        return fileName;
+    }
+
+    const int lastDot = fileName.lastIndexOf('.');
+    if (lastDot <= 0) {
+        return fileName;
+    }
+
+    return fileName.left(lastDot);
+}
+
+class MillerItemDelegate final : public QStyledItemDelegate {
+public:
+    using UrlResolver = std::function<QUrl(const QModelIndex &)>;
+    using IconResolver = std::function<QIcon(const QUrl &)>;
+    using BoolResolver = std::function<bool()>;
+
+    MillerItemDelegate(UrlResolver urlResolver,
+                       IconResolver iconResolver,
+                       BoolResolver showThumbnailsResolver,
+                       BoolResolver showFileExtensionsResolver,
+                       QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+        , m_urlResolver(std::move(urlResolver))
+        , m_iconResolver(std::move(iconResolver))
+        , m_showThumbnailsResolver(std::move(showThumbnailsResolver))
+        , m_showFileExtensionsResolver(std::move(showFileExtensionsResolver)) {}
+
+protected:
+    void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override {
+        QStyledItemDelegate::initStyleOption(option, index);
+
+        if (!option || index.column() != 0) {
+            return;
+        }
+
+        const QUrl url = m_urlResolver ? m_urlResolver(index) : QUrl();
+        if (!url.isLocalFile()) {
+            return;
+        }
+
+        const QFileInfo fi(url.toLocalFile());
+        if (m_showFileExtensionsResolver && !m_showFileExtensionsResolver()) {
+            option->text = millerDisplayNameForFileInfo(fi, false);
+        }
+
+        if (m_showThumbnailsResolver && m_showThumbnailsResolver() && supportsMillerThumbnailPreview(fi.absoluteFilePath())) {
+            option->icon = m_iconResolver ? m_iconResolver(url) : option->icon;
+        }
+    }
+
+private:
+    UrlResolver m_urlResolver;
+    IconResolver m_iconResolver;
+    BoolResolver m_showThumbnailsResolver;
+    BoolResolver m_showFileExtensionsResolver;
+};
 
 MillerView::MillerView(QWidget *parent) : QWidget(parent) {
     layout = new QHBoxLayout(this);
     layout->setContentsMargins(0,0,0,0);
     layout->setSpacing(0);
+    m_thumbs = new ThumbCache(this);
 }
 
 void MillerView::setRootUrl(const QUrl &url) {
@@ -43,6 +135,7 @@ void MillerView::addColumn(const QUrl &url) {
     auto *view = new QListView(this);
     auto *model = new QFileSystemModel(view);
     const QString rootPath = url.toLocalFile();
+    model->setResolveSymlinks(m_followSymlinks);
     model->setRootPath(rootPath);
     model->setReadOnly(false);  // Enable drag & drop modifications
 
@@ -55,9 +148,22 @@ void MillerView::addColumn(const QUrl &url) {
 
     view->setModel(model);
     view->setRootIndex(model->index(rootPath));
+    view->setMinimumWidth(m_columnWidth);
+    view->setMaximumWidth(m_columnWidth);
+    view->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     view->setSelectionMode(QAbstractItemView::ExtendedSelection); // allow multi
     view->setSelectionBehavior(QAbstractItemView::SelectRows);
     view->setEditTriggers(QAbstractItemView::NoEditTriggers);     // no rename on dblclick
+    view->setItemDelegate(new MillerItemDelegate(
+        [model](const QModelIndex &idx) {
+            const QString path = model->filePath(idx);
+            return path.isEmpty() ? QUrl() : QUrl::fromLocalFile(path);
+        },
+        [this](const QUrl &fileUrl) { return getIconForFile(fileUrl); },
+        [this]() { return m_showThumbnails; },
+        [this]() { return m_showFileExtensions; },
+        view
+    ));
 
     // Enable drag and drop between columns
     view->setDragEnabled(true);
@@ -149,12 +255,11 @@ void MillerView::addColumn(const QUrl &url) {
         const QString p = model->filePath(idx);
         if (p.isEmpty()) return;
 
-        pruneColumnsAfter(view);
-
         QFileInfo fi(p);
         if (fi.isDir()) {
-            addColumn(QUrl::fromLocalFile(p));
+            tryNavigateToPath(view, p, true);
         } else {
+            pruneColumnsAfter(view);
             FileOpsService::openUrl(QUrl::fromLocalFile(p), this);
         }
     };
@@ -179,7 +284,8 @@ void MillerView::addColumn(const QUrl &url) {
             const qint64 elapsedMs = m_renameClickTimer.isValid() ? m_renameClickTimer.elapsed() : -1;
             // Finder-style slow second click on selected item enters rename mode.
             if (sameTarget && elapsedMs >= 500 && elapsedMs <= 2000) {
-                beginInlineRename(view, idx);
+                view->setCurrentIndex(idx);
+                renameSelected();
                 m_renameClickTimer.invalidate();
                 m_renameClickIndex = QPersistentModelIndex();
                 return;
@@ -194,8 +300,7 @@ void MillerView::addColumn(const QUrl &url) {
 
         QFileInfo fi(path);
         if (fi.isDir()) {
-            pruneColumnsAfter(view);
-            addColumn(QUrl::fromLocalFile(path));
+            tryNavigateToPath(view, path, false);
         }
     });
 
@@ -274,8 +379,7 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
 
         QFileInfo fi(p);
         if (fi.isDir()) {
-            pruneColumnsAfter(view);
-            addColumn(QUrl::fromLocalFile(p));
+            tryNavigateToPath(view, p, true);
         }
         // On files: do nothing (classic Finder behavior)
         return true;
@@ -379,7 +483,7 @@ void MillerView::renameSelected() {
 
     const QModelIndex current = focusedView->currentIndex();
     if (!current.isValid()) return;
-    beginInlineRename(focusedView, current);
+    emit renameRequested();
 }
 
 void MillerView::typeToSelect(QListView *view, const QString &text) {
@@ -501,6 +605,50 @@ void MillerView::setShowHiddenFiles(bool show) {
     }
 }
 
+void MillerView::setShowThumbnails(bool show) {
+    m_showThumbnails = show;
+
+    for (QListView *view : columns) {
+        if (view && view->viewport()) {
+            view->viewport()->update();
+        }
+    }
+}
+
+void MillerView::setShowFileExtensions(bool show) {
+    m_showFileExtensions = show;
+
+    for (QListView *view : columns) {
+        if (view && view->viewport()) {
+            view->viewport()->update();
+        }
+    }
+}
+
+void MillerView::setColumnWidth(int width) {
+    if (width < 150) width = 150;
+    if (width > 400) width = 400;
+
+    m_columnWidth = width;
+
+    for (QListView *view : columns) {
+        if (!view) continue;
+        view->setMinimumWidth(width);
+        view->setMaximumWidth(width);
+        view->updateGeometry();
+    }
+}
+
+void MillerView::setFollowSymlinks(bool follow) {
+    m_followSymlinks = follow;
+
+    for (QListView *view : columns) {
+        if (auto *model = qobject_cast<QFileSystemModel *>(view->model())) {
+            model->setResolveSymlinks(follow);
+        }
+    }
+}
+
 void MillerView::setSort(int column, Qt::SortOrder order) {
     m_sortColumn = column;
     m_sortOrder = order;
@@ -510,4 +658,100 @@ void MillerView::setSort(int column, Qt::SortOrder order) {
             model->sort(m_sortColumn, m_sortOrder);
         }
     }
+}
+
+void MillerView::generateThumbnail(const QUrl &url) const {
+    if (!m_showThumbnails || !url.isLocalFile()) return;
+
+    const QString path = url.toLocalFile();
+    const QFileInfo fi(path);
+    if (!fi.exists() || fi.isDir()) return;
+
+    if (m_thumbs && m_thumbs->has(url)) return;
+
+    const QString thumbPath = millerThumbnailPath(url);
+    const QFileInfo thumbInfo(thumbPath);
+
+    if (thumbInfo.exists() && thumbInfo.lastModified() >= fi.lastModified()) {
+        const QPixmap thumb(thumbPath);
+        if (!thumb.isNull() && m_thumbs) {
+            m_thumbs->put(url, thumb);
+            return;
+        }
+    }
+
+    QPixmap thumbnail;
+    if (isMillerImageFile(path)) {
+        const QPixmap original(path);
+        if (!original.isNull()) {
+            thumbnail = original.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        }
+    }
+
+    if (!thumbnail.isNull()) {
+        thumbnail.save(thumbPath, "PNG");
+        if (m_thumbs) {
+            m_thumbs->put(url, thumbnail);
+        }
+    }
+}
+
+QIcon MillerView::getIconForFile(const QUrl &url) const {
+    if (!m_showThumbnails || !url.isLocalFile()) {
+        return QIcon();
+    }
+
+    if (m_thumbs && m_thumbs->has(url)) {
+        return QIcon(m_thumbs->get(url));
+    }
+
+    const QString thumbPath = millerThumbnailPath(url);
+    if (QFileInfo(thumbPath).exists()) {
+        const QPixmap thumb(thumbPath);
+        if (!thumb.isNull()) {
+            if (m_thumbs) {
+                m_thumbs->put(url, thumb);
+            }
+            return QIcon(thumb);
+        }
+    }
+
+    const QString path = url.toLocalFile();
+    if (supportsMillerThumbnailPreview(path)) {
+        generateThumbnail(url);
+        if (m_thumbs && m_thumbs->has(url)) {
+            return QIcon(m_thumbs->get(url));
+        }
+    }
+
+    QFileIconProvider provider;
+    return provider.icon(QFileInfo(path));
+}
+
+bool MillerView::isDirectorySymlinkPath(const QString &path) const {
+    const QFileInfo fi(path);
+    return fi.isSymLink() && fi.isDir();
+}
+
+bool MillerView::tryNavigateToPath(QListView *view, const QString &path, bool showBlockedMessage) {
+    if (path.isEmpty()) {
+        return false;
+    }
+
+    if (!m_followSymlinks && isDirectorySymlinkPath(path)) {
+        if (showBlockedMessage) {
+            const QFileInfo fi(path);
+            const QString displayName = fi.fileName().isEmpty() ? path : fi.fileName();
+            QMessageBox::information(
+                this,
+                tr("Symlink Navigation Disabled"),
+                tr("'%1' is a symbolic link to a directory.\n\nEnable 'Follow symbolic links' in Preferences to navigate into it.")
+                    .arg(displayName));
+        }
+        return false;
+    }
+
+    pruneColumnsAfter(view);
+    addColumn(QUrl::fromLocalFile(path));
+    return true;
 }

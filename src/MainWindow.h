@@ -37,6 +37,8 @@ protected:
 private slots:
     void newTab();
     void closeCurrentTab();
+    void undoLastFileOperation();
+    void redoLastFileOperation();
     void placeActivated(const QUrl &url);
     void toggleToolbar(bool on);
     void openPreferences();
@@ -62,6 +64,8 @@ private:
     QAction *actShowHidden;
     QAction *actPrefs;
     QAction *actQuickLook;
+    QAction *actUndo = nullptr;
+    QAction *actRedo = nullptr;
     
     // Status bar
     QLabel *statusLabel;
@@ -74,6 +78,7 @@ private:
     Pane* currentPane() const;
     QList<Pane*> allPanes() const;
     void buildMenus();
+    void refreshAllPanes();
     void loadSettings();
     void saveSettings();
     void applyTheme(int theme);
