@@ -198,6 +198,9 @@ private:
     // Initialization state
     bool m_viewInitialized = false;
 
+    // Inline rename editing state (guards eventFilter from intercepting editor keys)
+    bool m_isEditing = false;
+
     // Ctrl+L editable path bar toggle
     bool m_pathBarEditRequested = false;
 

@@ -320,10 +320,7 @@ void MainWindow::buildMenus() {
     go->addAction("Home", [this]{ if (auto p=currentPane()) p->goHome(); });
     go->addSeparator();
     auto *actGoToFolder = go->addAction("Go to Folder…", [this]{ goToFolder(); });
-    actGoToFolder->setShortcuts({
-        QKeySequence("Ctrl+Shift+G"),
-        QKeySequence("Ctrl+L"),
-    });
+    actGoToFolder->setShortcut(QKeySequence("Ctrl+Shift+G"));
     
     go->addSeparator();
     

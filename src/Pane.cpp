@@ -699,7 +699,17 @@ void Pane::setRoot(const QUrl &url) {
     if (auto *l = dirModel->dirLister()) {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
-    if (miller) miller->setRootUrl(url);
+
+    // Miller view only supports local filesystem paths (QFileSystemModel).
+    // For non-local URLs (trash:/, filenamesearch://, etc.), auto-switch to
+    // Details view which uses KDirModel and handles all KIO protocols.
+    if (!url.isLocalFile() && stack->currentWidget() == miller) {
+        viewBox->setCurrentIndex(Details);
+        setViewMode(Details);
+    } else if (miller) {
+        miller->setRootUrl(url);
+    }
+
     syncNavigatorLocation(url);
     emit urlChanged(url);
 }
@@ -1602,14 +1612,15 @@ void Pane::beginInlineRename(QAbstractItemView *view, const QModelIndex &index) 
     view->setEditTriggers(QAbstractItemView::AllEditTriggers);
     view->edit(index);
 
+    m_isEditing = true;
+
     // Connect to delegate's closeEditor to restore no-edit state when done
-    // Use a queued single-shot to avoid issues with multiple connections
     QAbstractItemDelegate *delegate = view->itemDelegate();
     if (delegate) {
-        // Disconnect any previous connections to avoid stacking
         disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
-        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [view]() {
+        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [this, view]() {
             view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            m_isEditing = false;
         }, Qt::QueuedConnection);
     }
 }
@@ -1720,7 +1731,12 @@ void Pane::navigateToHistoryEntry(const QUrl &url) {
     if (auto *l = dirModel->dirLister()) {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
-    if (miller) miller->setRootUrl(url);
+    if (!url.isLocalFile() && stack->currentWidget() == miller) {
+        viewBox->setCurrentIndex(Details);
+        setViewMode(Details);
+    } else if (miller) {
+        miller->setRootUrl(url);
+    }
     syncNavigatorLocation(url);
     emit urlChanged(url);
 }
@@ -2026,6 +2042,19 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
         }
 
         QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
+
+        // When a rename editor is open, let keys go to the editor.
+        // Only handle Escape (cancel) ourselves.
+        if (m_isEditing) {
+            if (keyEvent->key() == Qt::Key_Escape) {
+                view->closePersistentEditor(view->currentIndex());
+                view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+                m_isEditing = false;
+                return true;
+            }
+            return false;  // Pass all other keys (Enter, Space, letters) to the editor
+        }
+
         if (keyEvent->key() == Qt::Key_Space) {
             // Handle spacebar for QuickLook in all view modes
             QModelIndex current = view->currentIndex();
@@ -2033,7 +2062,7 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
                 QUrl url = urlForIndex(current);
                 if (url.isValid()) {
                     quickLookSelected();
-                    return true; // Event handled
+                    return true;
                 }
             }
         }
