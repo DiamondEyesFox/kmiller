@@ -7,6 +7,7 @@
 #include <QKeyEvent>
 #include <QPointer>
 #include <QAbstractItemDelegate>
+#include <QLineEdit>
 #include <QTimer>
 #include <QListView>
 
@@ -260,6 +261,15 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
     if (event->type() != QEvent::KeyPress) return QWidget::eventFilter(obj, event);
 
     auto *ke = static_cast<QKeyEvent*>(event);
+
+    // When a rename editor is open, let all keys go to the editor
+    // except Escape (cancel) and Enter (commit), which we handle below.
+    if (m_isEditing
+        && ke->key() != Qt::Key_Return && ke->key() != Qt::Key_Enter
+        && ke->key() != Qt::Key_Escape) {
+        return false;
+    }
+
     auto *model = qobject_cast<QFileSystemModel*>(view->model());
     if (!model) return QWidget::eventFilter(obj, event);
 
@@ -289,6 +299,11 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
     }
 
     if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+        // If a rename editor is open, let it handle Enter (commit the edit).
+        if (m_isEditing) {
+            return false;  // Pass through to the editor
+        }
+
         if (ke->modifiers().testFlag(Qt::ControlModifier)) {
             // Ctrl+Enter: open/enter selection.
             QModelIndex idx = view->currentIndex();
@@ -315,6 +330,16 @@ bool MillerView::eventFilter(QObject *obj, QEvent *event) {
     if (ke->key() == Qt::Key_F2) {
         renameSelected();
         return true;
+    }
+
+    if (ke->key() == Qt::Key_Escape) {
+        // If a rename editor is open, cancel it.
+        if (m_isEditing) {
+            view->closePersistentEditor(view->currentIndex());
+            view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            m_isEditing = false;
+            return true;
+        }
     }
 
     if (ke->key() == Qt::Key_Left) {
@@ -362,12 +387,14 @@ void MillerView::beginInlineRename(QListView *view, const QModelIndex &idx) {
     view->setCurrentIndex(idx);
     view->setEditTriggers(QAbstractItemView::AllEditTriggers);
     view->edit(idx);
+    m_isEditing = true;
 
     QAbstractItemDelegate *delegate = view->itemDelegate();
     if (delegate) {
         disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
-        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [view]() {
+        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [this, view]() {
             view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            m_isEditing = false;
         }, Qt::QueuedConnection);
     }
 }
@@ -508,6 +535,10 @@ void MillerView::setShowHiddenFiles(bool show) {
             model->setFilter(filters);
         }
     }
+}
+
+void MillerView::setColumnWidth(int width) {
+    m_columnWidth = width;
 }
 
 void MillerView::setSort(int column, Qt::SortOrder order) {

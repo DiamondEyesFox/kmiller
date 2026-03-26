@@ -16,6 +16,7 @@ public:
     void setRootUrl(const QUrl &url);
     void setShowHiddenFiles(bool show);
     void setSort(int column, Qt::SortOrder order);
+    void setColumnWidth(int width);
     void focusLastColumn();
     QList<QUrl> getSelectedUrls() const;
     void renameSelected();
@@ -42,6 +43,7 @@ private:
     QVector<QListView*> columns;
     QUrl root;
     bool m_showHiddenFiles = false;
+    int m_columnWidth = 200;
 
     // Type-to-select state
     QString m_searchString;
@@ -51,6 +53,9 @@ private:
     QPointer<QListView> m_renameClickView;
     QPersistentModelIndex m_renameClickIndex;
     QElapsedTimer m_renameClickTimer;
+
+    // Inline rename state
+    bool m_isEditing = false;
 
     // Sort state kept in sync with Pane sort actions.
     int m_sortColumn = 0;

@@ -82,6 +82,12 @@ public:
     // Hidden files
     void setShowHiddenFiles(bool show);
     bool showHiddenFiles() const { return m_showHiddenFiles; }
+
+    // Settings truthfulness — propagate saved settings to live panes
+    void setShowThumbnails(bool show);
+    void setShowFileExtensions(bool show);
+    void setMillerColumnWidth(int width);
+    void setFollowSymlinks(bool follow);
     
     // Status updates
     void updateStatus();
@@ -182,6 +188,8 @@ private:
     QUrl currentRoot;
     bool m_previewVisible = false;
     bool m_showHiddenFiles = false;
+    bool m_showFileExtensions = true;
+    bool m_followSymlinks = false;
     
     // Navigation history
     QList<QUrl> m_history;
@@ -189,6 +197,13 @@ private:
 
     // Initialization state
     bool m_viewInitialized = false;
+
+    // Ctrl+L editable path bar toggle
+    bool m_pathBarEditRequested = false;
+
+    // Selection preservation across view mode switches
+    QList<QUrl> m_savedSelectionUrls;
+    QUrl m_savedCurrentUrl;
 
     // Finder-style slow second-click rename state for classic views.
     QPointer<QAbstractItemView> m_renameClickView;

@@ -501,13 +501,53 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     connect(viewBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &Pane::onViewModeChanged);
     connect(zoom, &QSlider::valueChanged, this, &Pane::onZoomChanged);
     connect(nav, &KUrlNavigator::urlChanged, this, &Pane::onNavigatorUrlChanged);
-    // Keep breadcrumb mode locked. KUrlNavigator doesn't expose a clean API
-    // to disable the editable toggle, so we revert it immediately when triggered.
+    // Keep breadcrumb mode locked UNLESS user explicitly requested edit via Ctrl+L/F6.
     connect(nav, &KUrlNavigator::editableStateChanged, this, [this](bool editable) {
-        if (editable && nav) {
+        if (editable && nav && !m_pathBarEditRequested) {
             nav->setUrlEditable(false);
         }
     });
+
+    // Ctrl+L / F6: toggle path bar to editable mode (Dolphin convention)
+    auto *editPathShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_L), this);
+    connect(editPathShortcut, &QShortcut::activated, this, [this]() {
+        if (!nav) return;
+        m_pathBarEditRequested = true;
+        nav->setUrlEditable(true);
+        // Focus the line edit inside KUrlNavigator
+        if (auto *le = nav->findChild<QLineEdit*>()) {
+            le->setFocus();
+            le->selectAll();
+        }
+    });
+    auto *editPathShortcutF6 = new QShortcut(QKeySequence(Qt::Key_F6), this);
+    connect(editPathShortcutF6, &QShortcut::activated, this, [this]() {
+        if (!nav) return;
+        m_pathBarEditRequested = true;
+        nav->setUrlEditable(true);
+        if (auto *le = nav->findChild<QLineEdit*>()) {
+            le->setFocus();
+            le->selectAll();
+        }
+    });
+
+    // When Enter is pressed in the editable path bar, navigate and revert to breadcrumb mode.
+    connect(nav, &KUrlNavigator::returnPressed, this, [this]() {
+        m_pathBarEditRequested = false;
+        nav->setUrlEditable(false);
+        focusView();
+    });
+
+    // Escape in the path bar line edit: cancel editing, revert to breadcrumb mode.
+    if (auto *le = nav->findChild<QLineEdit*>()) {
+        auto *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), le);
+        escShortcut->setContext(Qt::WidgetShortcut);
+        connect(escShortcut, &QShortcut::activated, this, [this]() {
+            m_pathBarEditRequested = false;
+            nav->setUrlEditable(false);
+            focusView();
+        });
+    }
     
     // Recursive search via KIO filenamesearch:// protocol
     connect(searchBox, &QLineEdit::textChanged, this, [this](const QString &text){
@@ -678,6 +718,31 @@ void Pane::setViewMode(int idx) {
 
     bool leavingMiller = (stack->currentWidget() == miller && idx != Miller);
 
+    // --- Save selection from the outgoing view ---
+    m_savedSelectionUrls.clear();
+    m_savedCurrentUrl = QUrl();
+
+    if (stack->currentWidget() == miller) {
+        m_savedSelectionUrls = miller->getSelectedUrls();
+        // The current (focused) item is typically the first selected item in Miller
+        if (!m_savedSelectionUrls.isEmpty())
+            m_savedCurrentUrl = m_savedSelectionUrls.first();
+    } else {
+        auto *oldView = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+        if (oldView && oldView->selectionModel()) {
+            const auto selection = oldView->selectionModel()->selectedIndexes();
+            for (const auto &si : selection) {
+                if (si.column() == 0) {
+                    QUrl u = urlForIndex(si);
+                    if (u.isValid()) m_savedSelectionUrls.append(u);
+                }
+            }
+            QUrl cur = urlForIndex(oldView->currentIndex());
+            if (cur.isValid())
+                m_savedCurrentUrl = cur;
+        }
+    }
+
     // When switching FROM Miller to a classic view, reload the dir model
     // at the current location so the classic view shows the right folder.
     if (leavingMiller) {
@@ -688,26 +753,83 @@ void Pane::setViewMode(int idx) {
 
     stack->setCurrentIndex(idx);
 
-    // Ensure a sane current/selection when switching (for non-Miller)
+    // --- Restore selection in the new view ---
     if (idx != Miller) {
-        auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
-        if (v) {
+        // Lambda to restore selection once the model has loaded
+        auto restoreSelection = [this, idx]() {
+            auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+            if (!v) return;
+
             QModelIndex rootIdx = v->rootIndex();
             if (!rootIdx.isValid()) {
-                // map current root into proxy:
                 QModelIndex pr = proxy->mapFromSource(dirModel->indexForUrl(currentRoot));
                 rootIdx = pr;
                 v->setRootIndex(rootIdx);
             }
-            if (!v->currentIndex().isValid() && proxy->rowCount(rootIdx) > 0) {
-                QModelIndex first = proxy->index(0,0,rootIdx);
-                v->setCurrentIndex(first);
-                if (auto *sm = v->selectionModel())
-                    sm->select(first, QItemSelectionModel::ClearAndSelect|QItemSelectionModel::Rows);
-                v->scrollTo(first);
-                onCurrentChanged(first, QModelIndex());
+
+            if (!m_savedSelectionUrls.isEmpty()) {
+                auto *sm = v->selectionModel();
+                if (sm) sm->clearSelection();
+
+                QModelIndex currentIdx;
+                for (const QUrl &url : std::as_const(m_savedSelectionUrls)) {
+                    QModelIndex srcIdx = dirModel->indexForUrl(url);
+                    if (!srcIdx.isValid()) continue;
+                    QModelIndex proxyIdx = proxy->mapFromSource(srcIdx);
+                    if (!proxyIdx.isValid()) continue;
+                    if (sm)
+                        sm->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                    if (url == m_savedCurrentUrl)
+                        currentIdx = proxyIdx;
+                }
+
+                if (currentIdx.isValid()) {
+                    v->setCurrentIndex(currentIdx);
+                    v->scrollTo(currentIdx);
+                    onCurrentChanged(currentIdx, QModelIndex());
+                } else if (sm && sm->hasSelection()) {
+                    // Current URL not found, use first selected
+                    QModelIndex first = sm->selectedIndexes().first();
+                    v->setCurrentIndex(first);
+                    v->scrollTo(first);
+                    onCurrentChanged(first, QModelIndex());
+                }
+            } else {
+                // No saved selection — fall back to selecting the first item
+                if (!v->currentIndex().isValid() && proxy->rowCount(rootIdx) > 0) {
+                    QModelIndex first = proxy->index(0, 0, rootIdx);
+                    v->setCurrentIndex(first);
+                    if (auto *sm = v->selectionModel())
+                        sm->select(first, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                    v->scrollTo(first);
+                    onCurrentChanged(first, QModelIndex());
+                }
             }
+
+            m_savedSelectionUrls.clear();
+            m_savedCurrentUrl = QUrl();
+        };
+
+        if (leavingMiller) {
+            // Model loads asynchronously after openUrl — restore once it finishes
+            auto *lister = dirModel->dirLister();
+            if (lister) {
+                auto conn = std::make_shared<QMetaObject::Connection>();
+                *conn = connect(lister, QOverload<>::of(&KDirLister::completed), this,
+                    [this, restoreSelection, conn]() {
+                        disconnect(*conn);
+                        restoreSelection();
+                    });
+            }
+        } else {
+            // Model is already loaded for classic→classic switches
+            restoreSelection();
         }
+    } else {
+        // Switching TO Miller — Miller handles its own navigation via setRootUrl.
+        // currentRoot is already synced, so nothing extra needed.
+        m_savedSelectionUrls.clear();
+        m_savedCurrentUrl = QUrl();
     }
 }
 
@@ -821,6 +943,28 @@ void Pane::setShowHiddenFiles(bool show) {
     if (miller) {
         miller->setShowHiddenFiles(show);
     }
+}
+
+void Pane::setShowThumbnails(bool show) {
+    if (m_previewGenerator) {
+        m_previewGenerator->setPreviewShown(show);
+    }
+}
+
+void Pane::setShowFileExtensions(bool show) {
+    m_showFileExtensions = show;
+    // Display logic to be implemented; the setting is now stored and read.
+}
+
+void Pane::setMillerColumnWidth(int width) {
+    if (miller) {
+        miller->setColumnWidth(width);
+    }
+}
+
+void Pane::setFollowSymlinks(bool follow) {
+    m_followSymlinks = follow;
+    // Navigation code can check m_followSymlinks when resolving directory symlinks.
 }
 
 void Pane::clearPreview() {

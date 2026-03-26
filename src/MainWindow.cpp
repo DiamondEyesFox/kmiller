@@ -196,6 +196,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // Load saved settings
     loadSettings();
 
+    // Restore window geometry, state, and splitter sizes from last session.
+    {
+        QSettings settings;
+        if (settings.contains("mainwindow/geometry"))
+            restoreGeometry(settings.value("mainwindow/geometry").toByteArray());
+        if (settings.contains("mainwindow/state"))
+            restoreState(settings.value("mainwindow/state").toByteArray());
+        if (settings.contains("mainwindow/splitterSizes"))
+            splitter->restoreState(settings.value("mainwindow/splitterSizes").toByteArray());
+    }
+
     // Set focus to main view after window is shown
     QTimer::singleShot(0, this, [this]() {
         if (auto *p = currentPane()) {
@@ -558,11 +569,20 @@ void MainWindow::loadSettings() {
     globalZoomSlider->setValue(iconSize);
     globalZoomSlider->blockSignals(false);
 
+    bool showThumbs = settings.value("view/showThumbnails", true).toBool();
+    bool showExts = settings.value("view/showFileExtensions", true).toBool();
+    int millerWidth = settings.value("view/millerColumnWidth", 200).toInt();
+    bool followSymlinks = settings.value("advanced/followSymlinks", false).toBool();
+
     for (Pane *p : allPanes()) {
         p->setShowHiddenFiles(showHidden);
         p->setPreviewVisible(showPreview);
         p->setViewMode(defaultView);
         p->setZoomValue(iconSize);
+        p->setShowThumbnails(showThumbs);
+        p->setShowFileExtensions(showExts);
+        p->setMillerColumnWidth(millerWidth);
+        p->setFollowSymlinks(followSymlinks);
     }
     
     // Load and apply theme
@@ -598,6 +618,13 @@ void MainWindow::saveSettings() {
 void MainWindow::closeEvent(QCloseEvent *event) {
     // Persist window-driven settings one more time as a safety net.
     saveSettings();
+
+    // Save window geometry, state, and splitter sizes for next launch.
+    QSettings settings;
+    settings.setValue("mainwindow/geometry", saveGeometry());
+    settings.setValue("mainwindow/state", saveState());
+    settings.setValue("mainwindow/splitterSizes", splitter->saveState());
+
     QMainWindow::closeEvent(event);
 }
 
