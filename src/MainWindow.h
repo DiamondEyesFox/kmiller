@@ -29,7 +29,7 @@ public:
     int getCurrentViewMode() const;
 
 public slots:
-    void updateStatusBar(int totalFiles, int selectedFiles, qint64 selectedSize = 0);
+    void updateStatusBar(int totalFiles, int selectedFiles, qint64 selectedSize = 0, const QString &extraInfo = QString());
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -66,7 +66,7 @@ private:
     QAction *actQuickLook;
     QAction *actUndo = nullptr;
     QAction *actRedo = nullptr;
-    
+
     // Status bar
     QLabel *statusLabel;
     QSlider *globalZoomSlider;

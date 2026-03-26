@@ -46,20 +46,16 @@ set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia MultimediaWidgets DBus Concurrent)
 find_package(KF6KIO REQUIRED)               # provides KF6::KIOCore/KIOWidgets/KIOFileWidgets
-find_package(KF6Archive REQUIRED)
 find_package(Poppler REQUIRED COMPONENTS Qt6)
+find_package(KF6Archive REQUIRED)
 
 # ===== Sources / target =====
 add_executable(kmiller
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
-    src/DialogUtils.cpp
-    src/DialogUtils.h
     src/Pane.cpp
     src/Pane.h
-    src/PaneNavigationState.cpp
-    src/PaneNavigationState.h
     src/MillerView.cpp
     src/MillerView.h
     src/QuickLookDialog.cpp
@@ -68,8 +64,6 @@ add_executable(kmiller
     src/ThumbCache.h
     src/FileOpsService.cpp
     src/FileOpsService.h
-    src/ArchiveService.cpp
-    src/ArchiveService.h
     src/SettingsDialog.cpp
     src/SettingsDialog.h
     src/PropertiesDialog.cpp
@@ -78,6 +72,12 @@ add_executable(kmiller
     src/FileChooserPortal.h
     src/FileChooserDialog.cpp
     src/FileChooserDialog.h
+    src/PaneNavigationState.cpp
+    src/PaneNavigationState.h
+    src/DialogUtils.cpp
+    src/DialogUtils.h
+    src/ArchiveService.cpp
+    src/ArchiveService.h
 )
 
 target_include_directories(kmiller PRIVATE src)
@@ -91,8 +91,8 @@ target_link_libraries(kmiller
     KF6::KIOCore
     KF6::KIOWidgets
     KF6::KIOFileWidgets
-    KF6::Archive
     Poppler::Qt6
+    KF6::Archive
 )
 
 # ===== Install rules (versioned payload + stable launcher + desktop) =====
@@ -114,7 +114,7 @@ install(CODE "
 
 # Desktop entry
 install(CODE "
-  file(WRITE \"${CMAKE_BINARY_DIR}/kmiller.desktop\" \"[Desktop Entry]\\nType=Application\\nName=KMiller\\nGenericName=File Manager\\nComment=Finder-style file manager for Linux with Miller Columns and Quick Look\\nExec=kmiller %U\\nIcon=kmiller\\nTerminal=false\\nCategories=Qt;Utility;FileManager;\\nMimeType=inode/directory;\\n\")
+  file(WRITE \"${CMAKE_BINARY_DIR}/kmiller.desktop\" \"[Desktop Entry]\\nType=Application\\nName=KMiller\\nGenericName=File Manager\\nComment=Finder-style file manager with Miller Columns and Quick Look\\nExec=kmiller %U\\nIcon=kmiller\\nTerminal=false\\nCategories=Qt;KDE;Utility;FileManager;\\nMimeType=inode/directory;\\n\")
 ")
 install(FILES ${CMAKE_BINARY_DIR}/kmiller.desktop
         DESTINATION /usr/local/share/applications)

@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSettings>
+#include <QStorageInfo>
 #include <QTimer>
 #include <QUrl>
 
@@ -168,7 +169,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         actRedo->setEnabled(undoManager->isRedoAvailable());
         actRedo->setText(undoManager->redoText().isEmpty() ? QStringLiteral("Redo") : undoManager->redoText());
     }
-    
+
     // Setup status bar
     statusLabel = new QLabel("Ready");
     statusBar()->addWidget(statusLabel);
@@ -327,6 +328,8 @@ void MainWindow::buildMenus() {
     go->addSeparator();
     go->addAction("Root (/)", [this]{ if (auto p=currentPane()) p->setUrl(QUrl::fromLocalFile("/")); });
     go->addAction("Applications (/usr/share/applications)", [this]{ if (auto p=currentPane()) p->setUrl(QUrl::fromLocalFile("/usr/share/applications")); });
+    go->addSeparator();
+    go->addAction("Trash", [this]{ if (auto p=currentPane()) p->setUrl(QUrl(QStringLiteral("trash:/"))); });
 
     auto tools = menuBar()->addMenu("&Tools");
     tools->addAction("Preferences…", this, &MainWindow::openPreferences);
@@ -379,16 +382,12 @@ void MainWindow::addInitialTab(const QUrl &url) {
     QSettings settings;
     p->setShowHiddenFiles(actShowHidden->isChecked());
     p->setPreviewVisible(actPreviewPane->isChecked());
-    p->setShowThumbnails(settings.value("view/showThumbnails", true).toBool());
-    p->setShowFileExtensions(settings.value("view/showFileExtensions", true).toBool());
-    p->setMillerColumnWidth(settings.value("view/millerColumnWidth", 200).toInt());
-    p->setFollowSymlinks(settings.value("advanced/followSymlinks", false).toBool());
     p->setViewMode(settings.value("general/defaultView", 3).toInt());
     p->setZoomValue(globalZoomSlider->value());
 }
 
 void MainWindow::newTab() {
-    QUrl target = QUrl::fromLocalFile("/");
+    QUrl target = QUrl::fromLocalFile(QDir::homePath());
     if (auto *p = currentPane()) {
         const QUrl current = p->currentUrl();
         if (current.isValid()) target = current;
@@ -490,24 +489,43 @@ static QString formatSize(qint64 size) {
     }
 }
 
-void MainWindow::updateStatusBar(int totalFiles, int selectedFiles, qint64 selectedSize) {
+void MainWindow::updateStatusBar(int totalFiles, int selectedFiles, qint64 selectedSize, const QString &extraInfo) {
+    QString text;
     if (selectedFiles == 0) {
-        statusLabel->setText(QString("%1 items").arg(totalFiles));
+        text = QString("%1 items").arg(totalFiles);
     } else if (selectedFiles == 1) {
         if (selectedSize > 0) {
-            statusLabel->setText(QString("\"%1 of %2\" selected, %3")
-                .arg(selectedFiles).arg(totalFiles).arg(formatSize(selectedSize)));
+            text = QString("\"%1 of %2\" selected, %3")
+                .arg(selectedFiles).arg(totalFiles).arg(formatSize(selectedSize));
         } else {
-            statusLabel->setText(QString("%1 of %2 selected").arg(selectedFiles).arg(totalFiles));
+            text = QString("%1 of %2 selected").arg(selectedFiles).arg(totalFiles);
         }
     } else {
         if (selectedSize > 0) {
-            statusLabel->setText(QString("%1 of %2 selected, %3 total")
-                .arg(selectedFiles).arg(totalFiles).arg(formatSize(selectedSize)));
+            text = QString("%1 of %2 selected, %3 total")
+                .arg(selectedFiles).arg(totalFiles).arg(formatSize(selectedSize));
         } else {
-            statusLabel->setText(QString("%1 of %2 selected").arg(selectedFiles).arg(totalFiles));
+            text = QString("%1 of %2 selected").arg(selectedFiles).arg(totalFiles);
         }
     }
+
+    // Append extra info (e.g. broken symlink indicator)
+    if (!extraInfo.isEmpty()) {
+        text += extraInfo;
+    }
+
+    // Append free disk space for local directories
+    if (auto *p = currentPane()) {
+        QUrl url = p->currentUrl();
+        if (url.isLocalFile()) {
+            QStorageInfo storage(url.toLocalFile());
+            if (storage.isValid() && storage.isReady()) {
+                text += QString("  —  %1 free").arg(formatSize(storage.bytesAvailable()));
+            }
+        }
+    }
+
+    statusLabel->setText(text);
 }
 
 void MainWindow::loadSettings() {
@@ -536,10 +554,6 @@ void MainWindow::loadSettings() {
     
     // Load icon size used by status bar zoom slider and pane icon scaling.
     int iconSize = settings.value("view/iconSize", 64).toInt();
-    bool showThumbnails = settings.value("view/showThumbnails", true).toBool();
-    bool showFileExtensions = settings.value("view/showFileExtensions", true).toBool();
-    int millerColumnWidth = settings.value("view/millerColumnWidth", 200).toInt();
-    bool followSymlinks = settings.value("advanced/followSymlinks", false).toBool();
     globalZoomSlider->blockSignals(true);
     globalZoomSlider->setValue(iconSize);
     globalZoomSlider->blockSignals(false);
@@ -547,10 +561,6 @@ void MainWindow::loadSettings() {
     for (Pane *p : allPanes()) {
         p->setShowHiddenFiles(showHidden);
         p->setPreviewVisible(showPreview);
-        p->setShowThumbnails(showThumbnails);
-        p->setShowFileExtensions(showFileExtensions);
-        p->setMillerColumnWidth(millerColumnWidth);
-        p->setFollowSymlinks(followSymlinks);
         p->setViewMode(defaultView);
         p->setZoomValue(iconSize);
     }

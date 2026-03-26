@@ -8,7 +8,6 @@
 
 class QHBoxLayout;
 class QListView;
-class ThumbCache;
 
 class MillerView : public QWidget {
     Q_OBJECT
@@ -16,10 +15,6 @@ public:
     explicit MillerView(QWidget *parent = nullptr);
     void setRootUrl(const QUrl &url);
     void setShowHiddenFiles(bool show);
-    void setShowThumbnails(bool show);
-    void setShowFileExtensions(bool show);
-    void setColumnWidth(int width);
-    void setFollowSymlinks(bool follow);
     void setSort(int column, Qt::SortOrder order);
     void focusLastColumn();
     QList<QUrl> getSelectedUrls() const;
@@ -31,7 +26,6 @@ signals:
     void emptySpaceContextMenuRequested(const QUrl &folderUrl, const QPoint &globalPos);
     void selectionChanged(const QUrl &url);
     void navigatedTo(const QUrl &url);
-    void renameRequested();
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
@@ -41,20 +35,13 @@ private:
     void pruneColumnsAfter(QListView *view);
     void typeToSelect(QListView *view, const QString &text);
     void beginInlineRename(QListView *view, const QModelIndex &idx);
-    void generateThumbnail(const QUrl &url) const;
-    QIcon getIconForFile(const QUrl &url) const;
-    bool isDirectorySymlinkPath(const QString &path) const;
-    bool tryNavigateToPath(QListView *view, const QString &path, bool showBlockedMessage);
+
+    static constexpr int MaxColumns = 20;
 
     QHBoxLayout *layout = nullptr;
     QVector<QListView*> columns;
     QUrl root;
     bool m_showHiddenFiles = false;
-    bool m_showThumbnails = true;
-    bool m_showFileExtensions = true;
-    int m_columnWidth = 200;
-    bool m_followSymlinks = false;
-    mutable ThumbCache *m_thumbs = nullptr;
 
     // Type-to-select state
     QString m_searchString;

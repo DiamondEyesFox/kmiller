@@ -1,27 +1,27 @@
 // Local headers
 #include "Pane.h"
-#include "DialogUtils.h"
 #include "MillerView.h"
 #include "QuickLookDialog.h"
 #include "ThumbCache.h"
+#include "DialogUtils.h"
 #include "PropertiesDialog.h"
 #include "FileOpsService.h"
 #include "ArchiveService.h"
+#include <KFilePreviewGenerator>
 
 // Qt Core
 #include <QDir>
-#include <QDirIterator>
 #include <QFileInfo>
 #include <QCryptographicHash>
-#include <QFutureWatcher>
 #include <QMimeData>
 #include <QMimeDatabase>
 #include <QProcess>
 #include <QSignalBlocker>
 #include <QSettings>
+#include <algorithm>
 #include <QTimer>
 #include <QStandardPaths>
-#include <algorithm>
+#include <QFileSystemModel>
 #include <functional>
 #include <memory>
 
@@ -29,6 +29,7 @@
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QImageReader>
+#include <QCoreApplication>
 #include <QKeyEvent>
 #include <QPainter>
 #include <QFileIconProvider>
@@ -54,14 +55,12 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QStackedWidget>
-#include <QStandardItemModel>
 #include <QStyledItemDelegate>
 #include <QTextEdit>
 #include <QFrame>
 #include <QToolBar>
 #include <QTreeView>
 #include <QVBoxLayout>
-#include <QStyleOptionViewItem>
 
 // KDE Frameworks
 #include <KApplicationTrader>
@@ -74,77 +73,16 @@
 #include <KIO/CopyJob>
 #include <KIO/DeleteJob>
 #include <KIO/MkdirJob>
-#include <KIO/SimpleJob>
 #include <KService>
 #include <KUrlNavigator>
+#include <KIO/EmptyTrashJob>
 
 // External libraries
 #include <poppler-qt6.h>
-#include <QtConcurrent/QtConcurrentRun>
 
 static bool isImageFile(const QString &path) {
     const QByteArray fmt = QImageReader::imageFormat(path);
     return !fmt.isEmpty();
-}
-
-struct SearchResultEntry {
-    QUrl url;
-    QString name;
-    QString location;
-    QString kind;
-    QDateTime modified;
-    bool isDirectory = false;
-};
-
-static QList<SearchResultEntry> performRecursiveSearch(const QString &rootPath,
-                                                       const QString &query,
-                                                       bool includeHidden,
-                                                       int maxResults = 500) {
-    QList<SearchResultEntry> results;
-    if (rootPath.isEmpty()) {
-        return results;
-    }
-
-    const QString needle = query.trimmed();
-    if (needle.isEmpty()) {
-        return results;
-    }
-
-    QDir::Filters filters = QDir::AllEntries | QDir::NoDotAndDotDot;
-    if (includeHidden) {
-        filters |= QDir::Hidden;
-    }
-
-    QDirIterator it(rootPath, filters, QDirIterator::Subdirectories);
-    while (it.hasNext() && results.size() < maxResults) {
-        it.next();
-        const QFileInfo fi = it.fileInfo();
-        if (!fi.fileName().contains(needle, Qt::CaseInsensitive)) {
-            continue;
-        }
-
-        SearchResultEntry result;
-        result.url = QUrl::fromLocalFile(fi.absoluteFilePath());
-        result.name = fi.fileName();
-        result.location = fi.absolutePath();
-        result.kind = fi.isDir()
-            ? QStringLiteral("Folder")
-            : (fi.suffix().isEmpty()
-                ? QStringLiteral("File")
-                : QStringLiteral("%1 File").arg(fi.suffix().toUpper()));
-        result.modified = fi.lastModified();
-        result.isDirectory = fi.isDir();
-        results.append(result);
-    }
-
-    std::sort(results.begin(), results.end(), [](const SearchResultEntry &left, const SearchResultEntry &right) {
-        if (left.isDirectory != right.isDirectory) {
-            return left.isDirectory && !right.isDirectory;
-        }
-        return QString::localeAwareCompare(left.name, right.name) < 0;
-    });
-
-    return results;
 }
 
 static bool isArchiveFile(const QString &path) {
@@ -241,83 +179,8 @@ static QString summarizeConflictPaths(const QStringList &relativePaths, int maxI
     return lines.join(QLatin1Char('\n'));
 }
 
-static bool supportsThumbnailPreview(const QString &path) {
-    QFileInfo fi(path);
-    return isImageFile(path) || fi.suffix().compare("pdf", Qt::CaseInsensitive) == 0;
-}
-
-static bool isDirectorySymlinkUrl(const QUrl &url) {
-    if (!url.isLocalFile()) {
-        return false;
-    }
-
-    const QFileInfo fi(url.toLocalFile());
-    return fi.isSymLink() && fi.isDir();
-}
-
-static QString displayNameForFileInfo(const QFileInfo &fi, bool showFileExtensions) {
-    const QString fileName = fi.fileName();
-    if (showFileExtensions || fi.isDir()) {
-        return fileName;
-    }
-
-    const int lastDot = fileName.lastIndexOf('.');
-    if (lastDot <= 0) {
-        return fileName;
-    }
-
-    return fileName.left(lastDot);
-}
-
-class PaneItemDelegate final : public QStyledItemDelegate {
-public:
-    using UrlResolver = std::function<QUrl(const QModelIndex &)>;
-    using IconResolver = std::function<QIcon(const QUrl &)>;
-    using BoolResolver = std::function<bool()>;
-
-    PaneItemDelegate(UrlResolver urlResolver,
-                     IconResolver iconResolver,
-                     BoolResolver showThumbnailsResolver,
-                     BoolResolver showFileExtensionsResolver,
-                     QObject *parent = nullptr)
-        : QStyledItemDelegate(parent)
-        , m_urlResolver(std::move(urlResolver))
-        , m_iconResolver(std::move(iconResolver))
-        , m_showThumbnailsResolver(std::move(showThumbnailsResolver))
-        , m_showFileExtensionsResolver(std::move(showFileExtensionsResolver)) {}
-
-protected:
-    void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override {
-        QStyledItemDelegate::initStyleOption(option, index);
-
-        if (!option || index.column() != 0) {
-            return;
-        }
-
-        const QUrl url = m_urlResolver ? m_urlResolver(index) : QUrl();
-        if (!url.isLocalFile()) {
-            return;
-        }
-
-        const QFileInfo fi(url.toLocalFile());
-        if (m_showFileExtensionsResolver && !m_showFileExtensionsResolver()) {
-            option->text = displayNameForFileInfo(fi, false);
-        }
-
-        if (m_showThumbnailsResolver && m_showThumbnailsResolver() && supportsThumbnailPreview(fi.absoluteFilePath())) {
-            option->icon = m_iconResolver ? m_iconResolver(url) : option->icon;
-        }
-    }
-
-private:
-    UrlResolver m_urlResolver;
-    IconResolver m_iconResolver;
-    BoolResolver m_showThumbnailsResolver;
-    BoolResolver m_showFileExtensionsResolver;
-};
-
 static QPixmap getFileTypeIcon(const QFileInfo &fi, int size = 128) {
-    QMimeDatabase db;
+    static const QMimeDatabase db;
     QString mimeType;
     
     if (fi.isDir()) {
@@ -446,9 +309,15 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Search on the right side
     tb->addWidget(new QLabel(" Search "));
     searchBox = new QLineEdit(this);
-    searchBox->setPlaceholderText("Search this folder...");
+    searchBox->setPlaceholderText("Search files...");
     searchBox->setFixedWidth(150);
+    searchBox->setClearButtonEnabled(true);
     tb->addWidget(searchBox);
+
+    // Debounce timer for recursive search
+    m_searchDebounce = new QTimer(this);
+    m_searchDebounce->setSingleShot(true);
+    m_searchDebounce->setInterval(300);
 
     root->addWidget(tb);
 
@@ -472,6 +341,14 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
 
     stack = new QStackedWidget(this);
     hsplit->addWidget(stack);
+
+    // Empty folder overlay label
+    m_emptyFolderLabel = new QLabel("This folder is empty", stack);
+    m_emptyFolderLabel->setAlignment(Qt::AlignCenter);
+    m_emptyFolderLabel->setStyleSheet(
+        "QLabel { color: rgba(128, 128, 128, 180); font-size: 16px; font-style: italic; }");
+    m_emptyFolderLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_emptyFolderLabel->hide();
 
     // Preview area
     preview = new QWidget(this);
@@ -505,10 +382,14 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     proxy->setSortFoldersFirst(true);
     proxy->setDynamicSortFilter(true);
     
-    // Connect to model changes for status updates
+    // Connect to model changes for status updates and empty folder overlay
     connect(proxy, &QAbstractItemModel::rowsInserted, this, &Pane::updateStatus);
     connect(proxy, &QAbstractItemModel::rowsRemoved, this, &Pane::updateStatus);
     connect(proxy, &QAbstractItemModel::modelReset, this, &Pane::updateStatus);
+    connect(proxy, &QAbstractItemModel::rowsInserted, this, &Pane::updateEmptyFolderOverlay);
+    connect(proxy, &QAbstractItemModel::rowsRemoved, this, &Pane::updateEmptyFolderOverlay);
+    connect(proxy, &QAbstractItemModel::modelReset, this, &Pane::updateEmptyFolderOverlay);
+    connect(dirModel->dirLister(), &KDirLister::completed, this, &Pane::updateEmptyFolderOverlay);
 
     iconView = new QListView(this);
     iconView->setViewMode(QListView::IconMode);
@@ -523,21 +404,21 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     iconView->setDefaultDropAction(Qt::MoveAction);  // Finder-like behavior
     
     // Configure spacing like Finder - uniform grid with proper padding
+    iconView->setMovement(QListView::Snap);  // Snap to grid so arrow keys navigate in grid pattern
     iconView->setUniformItemSizes(true);
     iconView->setGridSize(QSize(100, 100)); // Finder-like grid spacing
     iconView->setSpacing(8); // Space between items
     iconView->setWordWrap(true);
     iconView->setTextElideMode(Qt::ElideMiddle);
     iconView->setContextMenuPolicy(Qt::CustomContextMenu);
-    iconView->setItemDelegate(new PaneItemDelegate(
-        [this](const QModelIndex &idx) { return urlForIndex(idx); },
-        [this](const QUrl &url) { return getIconForFile(url); },
-        [this]() { return m_showThumbnails; },
-        [this]() { return m_showFileExtensions; },
-        iconView
-    ));
     
     stack->addWidget(iconView);
+
+    // Dolphin-style async thumbnail generation for icon view.
+    // KFilePreviewGenerator handles visible-first priority, scroll pausing,
+    // and cut-item dimming automatically.
+    m_previewGenerator = new KFilePreviewGenerator(iconView);
+    m_previewGenerator->setPreviewShown(true);
 
     detailsView = new QTreeView(this);
     detailsView->setModel(proxy);
@@ -554,13 +435,6 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     detailsView->setDragDropMode(QAbstractItemView::DragDrop);
     detailsView->setDefaultDropAction(Qt::MoveAction);  // Finder-like behavior
     detailsView->setContextMenuPolicy(Qt::CustomContextMenu);
-    detailsView->setItemDelegate(new PaneItemDelegate(
-        [this](const QModelIndex &idx) { return urlForIndex(idx); },
-        [this](const QUrl &url) { return getIconForFile(url); },
-        [this]() { return m_showThumbnails; },
-        [this]() { return m_showFileExtensions; },
-        detailsView
-    ));
     
     // Load column visibility and width settings
     QSettings settings;
@@ -593,41 +467,12 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     compactView->setDragDropMode(QAbstractItemView::DragDrop);
     compactView->setDefaultDropAction(Qt::MoveAction);  // Finder-like behavior
     compactView->setContextMenuPolicy(Qt::CustomContextMenu);
-    compactView->setItemDelegate(new PaneItemDelegate(
-        [this](const QModelIndex &idx) { return urlForIndex(idx); },
-        [this](const QUrl &url) { return getIconForFile(url); },
-        [this]() { return m_showThumbnails; },
-        [this]() { return m_showFileExtensions; },
-        compactView
-    ));
     stack->addWidget(compactView);
 
-    searchResultsModel = new QStandardItemModel(this);
-    searchResultsModel->setHorizontalHeaderLabels({tr("Name"), tr("Location"), tr("Type"), tr("Modified")});
-
-    searchResultsView = new QTreeView(this);
-    searchResultsView->setModel(searchResultsModel);
-    searchResultsView->setRootIsDecorated(false);
-    searchResultsView->setAlternatingRowColors(true);
-    searchResultsView->header()->setStretchLastSection(true);
-    searchResultsView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    searchResultsView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    searchResultsView->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    searchResultsView->setContextMenuPolicy(Qt::CustomContextMenu);
-    stack->addWidget(searchResultsView);
-
     miller = new MillerView(this);
-    m_showThumbnails = settings.value("view/showThumbnails", true).toBool();
-    m_showFileExtensions = settings.value("view/showFileExtensions", true).toBool();
-    m_millerColumnWidth = settings.value("view/millerColumnWidth", 200).toInt();
-    m_followSymlinks = settings.value("advanced/followSymlinks", false).toBool();
-    miller->setShowThumbnails(m_showThumbnails);
-    miller->setShowFileExtensions(m_showFileExtensions);
-    miller->setColumnWidth(m_millerColumnWidth);
-    miller->setFollowSymlinks(m_followSymlinks);
     stack->addWidget(miller);
     // Ensure Ctrl+A selects all in classic views
-    for (QAbstractItemView* v : { static_cast<QAbstractItemView*>(iconView), static_cast<QAbstractItemView*>(detailsView), static_cast<QAbstractItemView*>(compactView), static_cast<QAbstractItemView*>(searchResultsView) }) {
+    for (QAbstractItemView* v : { static_cast<QAbstractItemView*>(iconView), static_cast<QAbstractItemView*>(detailsView), static_cast<QAbstractItemView*>(compactView) }) {
         if (!v) continue;
         auto *sc = new QShortcut(QKeySequence::SelectAll, v);
         connect(sc, &QShortcut::activated, v, [v]{ v->selectAll(); });
@@ -636,7 +481,6 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     connect(miller, &MillerView::quickLookRequested, this, [this](const QString &p){ if (ql && ql->isVisible()) { ql->close(); } else { if (!ql) ql = new QuickLookDialog(this); ql->showFile(p); } });
     connect(miller, &MillerView::contextMenuRequested, this, [this](const QList<QUrl> &urls, const QPoint &g){ showContextMenu(g, urls); });
     connect(miller, &MillerView::emptySpaceContextMenuRequested, this, [this](const QUrl &folderUrl, const QPoint &g){ showEmptySpaceContextMenu(g, folderUrl); });
-    connect(miller, &MillerView::renameRequested, this, &Pane::renameSelected);
     connect(miller, &MillerView::selectionChanged, this, [this](const QUrl &url){
         if (m_previewVisible) updatePreviewForUrl(url);
         // Update QuickLook if it's open
@@ -646,6 +490,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     });
     connect(miller, &MillerView::navigatedTo, this, [this](const QUrl &url){
         if (!url.isValid()) return;
+        currentRoot = url;
         syncNavigatorLocation(url);
         emit urlChanged(url);
     });
@@ -656,23 +501,52 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     connect(viewBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &Pane::onViewModeChanged);
     connect(zoom, &QSlider::valueChanged, this, &Pane::onZoomChanged);
     connect(nav, &KUrlNavigator::urlChanged, this, &Pane::onNavigatorUrlChanged);
+    // Keep breadcrumb mode locked. KUrlNavigator doesn't expose a clean API
+    // to disable the editable toggle, so we revert it immediately when triggered.
     connect(nav, &KUrlNavigator::editableStateChanged, this, [this](bool editable) {
-        // Keep Finder-style behavior: breadcrumb segments stay visible/clickable.
-        if (!editable || !nav) return;
-        QTimer::singleShot(0, this, [this]() {
-            if (nav && nav->isUrlEditable()) {
-                nav->setUrlEditable(false);
-            }
-        });
+        if (editable && nav) {
+            nav->setUrlEditable(false);
+        }
     });
     
-    // Search/filter functionality
+    // Recursive search via KIO filenamesearch:// protocol
     connect(searchBox, &QLineEdit::textChanged, this, [this](const QString &text){
-        if (text.trimmed().isEmpty()) {
-            clearSearchMode();
+        m_searchDebounce->stop();
+        if (text.isEmpty()) {
+            // Clear search: navigate back to pre-search URL
+            if (m_preSearchUrl.isValid()) {
+                QUrl restoreUrl = m_preSearchUrl;
+                m_preSearchUrl = QUrl();  // clear before navigating to avoid re-saving
+                setRoot(restoreUrl);
+            }
         } else {
-            beginSearch(text);
+            m_searchDebounce->start();
         }
+    });
+    connect(m_searchDebounce, &QTimer::timeout, this, [this](){
+        const QString text = searchBox->text().trimmed();
+        if (text.isEmpty()) return;
+        // Save current location before first search
+        if (!m_preSearchUrl.isValid()) {
+            m_preSearchUrl = currentRoot;
+        }
+        QUrl searchUrl(QStringLiteral("filenamesearch:/?search=%1&url=%2&checkContent=no")
+            .arg(QString::fromUtf8(QUrl::toPercentEncoding(text)),
+                 QString::fromUtf8(QUrl::toPercentEncoding(m_preSearchUrl.toString()))));
+        setRoot(searchUrl);
+    });
+    connect(searchBox, &QLineEdit::returnPressed, this, [this](){
+        // Immediate search on Enter
+        m_searchDebounce->stop();
+        const QString text = searchBox->text().trimmed();
+        if (text.isEmpty()) return;
+        if (!m_preSearchUrl.isValid()) {
+            m_preSearchUrl = currentRoot;
+        }
+        QUrl searchUrl(QStringLiteral("filenamesearch:/?search=%1&url=%2&checkContent=no")
+            .arg(QString::fromUtf8(QUrl::toPercentEncoding(text)),
+                 QString::fromUtf8(QUrl::toPercentEncoding(m_preSearchUrl.toString()))));
+        setRoot(searchUrl);
     });
 
     // Selection -> preview (Icons/Details/Compact)
@@ -709,8 +583,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
             const qint64 elapsedMs = m_renameClickTimer.isValid() ? m_renameClickTimer.elapsed() : -1;
             // Finder-style slow second click on selected item starts rename.
             if (sameTarget && elapsedMs >= 500 && elapsedMs <= 2000) {
-                v->setCurrentIndex(idx);
-                renameSelected();
+                beginInlineRename(v, idx);
                 m_renameClickTimer.invalidate();
                 m_renameClickIndex = QPersistentModelIndex();
                 return;
@@ -727,7 +600,6 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     hookSel(iconView);
     hookSel(detailsView);
     hookSel(compactView);
-    hookSel(searchResultsView);
 
     applyIconSize(64);
     setRoot(startUrl);
@@ -750,118 +622,49 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
 }
 
 void Pane::setRoot(const QUrl &url) {
-    m_navigationState.navigateTo(url);
-    applyLocation(m_navigationState.current());
-}
+    // Check readability for local directories before navigating
+    if (url.isLocalFile()) {
+        QFileInfo fi(url.toLocalFile());
+        if (fi.exists() && !fi.isReadable()) {
+            emit statusChanged(0, 0, 0, QString("Permission denied: %1").arg(url.toLocalFile()));
+            return;
+        }
+    }
 
-void Pane::setUrl(const QUrl &url) { setRoot(url); }
+    // When navigating away from a search URL via non-search means, clear search state
+    if (url.scheme() != QLatin1String("filenamesearch") && m_preSearchUrl.isValid()) {
+        m_preSearchUrl = QUrl();
+        if (searchBox && !searchBox->text().isEmpty()) {
+            const QSignalBlocker blocker(searchBox);
+            searchBox->clear();
+        }
+    }
 
-void Pane::applyLocation(const QUrl &url, bool emitChangeSignal) {
+    // Add to history if this is a new navigation (not back/forward)
+    if (currentRoot != url && m_historyIndex >= 0) {
+        // Remove any forward history when navigating to a new location
+        while (m_history.size() > m_historyIndex + 1) {
+            m_history.removeLast();
+        }
+        m_history.append(url);
+        m_historyIndex = m_history.size() - 1;
+    } else if (m_historyIndex < 0) {
+        // First navigation
+        m_history.clear();
+        m_history.append(url);
+        m_historyIndex = 0;
+    }
+    
     currentRoot = url;
     if (auto *l = dirModel->dirLister()) {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
     if (miller) miller->setRootUrl(url);
-    if (searchBox && !searchBox->text().trimmed().isEmpty()) {
-        beginSearch(searchBox->text());
-    }
     syncNavigatorLocation(url);
-    if (emitChangeSignal) {
-        emit urlChanged(url);
-    }
+    emit urlChanged(url);
 }
 
-void Pane::beginSearch(const QString &query) {
-    if (!searchResultsModel || !searchResultsView || !stack) {
-        return;
-    }
-
-    const QString trimmedQuery = query.trimmed();
-    if (trimmedQuery.isEmpty()) {
-        clearSearchMode();
-        return;
-    }
-
-    if (!m_searchModeActive && stack->currentWidget() != searchResultsView) {
-        m_savedViewModeBeforeSearch = currentViewMode();
-    }
-    m_searchModeActive = true;
-    stack->setCurrentWidget(searchResultsView);
-
-    ++m_searchRequestId;
-    const quint64 requestId = m_searchRequestId;
-
-    searchResultsModel->clear();
-    searchResultsModel->setHorizontalHeaderLabels({tr("Name"), tr("Location"), tr("Type"), tr("Modified")});
-
-    auto *watcher = new QFutureWatcher<QList<SearchResultEntry>>(this);
-    connect(watcher, &QFutureWatcher<QList<SearchResultEntry>>::finished, this, [this, watcher, requestId]() {
-        const QList<SearchResultEntry> results = watcher->result();
-        watcher->deleteLater();
-
-        if (requestId != m_searchRequestId || !searchResultsModel || !searchResultsView) {
-            return;
-        }
-
-        searchResultsModel->clear();
-        searchResultsModel->setHorizontalHeaderLabels({tr("Name"), tr("Location"), tr("Type"), tr("Modified")});
-
-        QFileIconProvider iconProvider;
-        for (const SearchResultEntry &result : results) {
-            auto *nameItem = new QStandardItem(result.name);
-            nameItem->setData(result.url, Qt::UserRole);
-
-            QIcon icon = result.isDirectory ? QIcon::fromTheme("folder") : getIconForFile(result.url);
-            if (icon.isNull() && result.url.isLocalFile()) {
-                icon = iconProvider.icon(QFileInfo(result.url.toLocalFile()));
-            }
-            if (!icon.isNull()) {
-                nameItem->setIcon(icon);
-            }
-
-            auto *locationItem = new QStandardItem(result.location);
-            auto *typeItem = new QStandardItem(result.kind);
-            auto *modifiedItem = new QStandardItem(
-                result.modified.isValid()
-                    ? result.modified.toString(QStringLiteral("yyyy-MM-dd hh:mm"))
-                    : QString());
-
-            searchResultsModel->appendRow({nameItem, locationItem, typeItem, modifiedItem});
-        }
-
-        if (searchResultsModel->rowCount() > 0) {
-            const QModelIndex first = searchResultsModel->index(0, 0);
-            searchResultsView->setCurrentIndex(first);
-            searchResultsView->scrollTo(first);
-        }
-
-        updateStatus();
-    });
-
-    const QString rootPath = currentRoot.toLocalFile();
-    const bool includeHidden = m_showHiddenFiles;
-    watcher->setFuture(QtConcurrent::run([rootPath, trimmedQuery, includeHidden]() {
-        return performRecursiveSearch(rootPath, trimmedQuery, includeHidden);
-    }));
-}
-
-void Pane::clearSearchMode() {
-    ++m_searchRequestId;
-
-    if (searchResultsModel) {
-        searchResultsModel->clear();
-        searchResultsModel->setHorizontalHeaderLabels({tr("Name"), tr("Location"), tr("Type"), tr("Modified")});
-    }
-
-    const bool wasSearchView = m_searchModeActive && stack && stack->currentWidget() == searchResultsView;
-    m_searchModeActive = false;
-
-    if (wasSearchView) {
-        setViewMode(m_savedViewModeBeforeSearch);
-    }
-
-    updateStatus();
-}
+void Pane::setUrl(const QUrl &url) { setRoot(url); }
 
 void Pane::syncNavigatorLocation(const QUrl &url) {
     if (!nav || nav->locationUrl() == url) return;
@@ -871,19 +674,22 @@ void Pane::syncNavigatorLocation(const QUrl &url) {
 
 void Pane::setViewMode(int idx) {
     if (!stack) return;
-    if (idx < 0 || idx > 3) return;
+    if (idx < Icons || idx > Miller) return;
 
-    if (m_searchModeActive) {
-        m_savedViewModeBeforeSearch = idx;
-        if (stack->currentWidget() == searchResultsView) {
-            return;
+    bool leavingMiller = (stack->currentWidget() == miller && idx != Miller);
+
+    // When switching FROM Miller to a classic view, reload the dir model
+    // at the current location so the classic view shows the right folder.
+    if (leavingMiller) {
+        if (auto *l = dirModel->dirLister()) {
+            l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
         }
     }
 
     stack->setCurrentIndex(idx);
 
     // Ensure a sane current/selection when switching (for non-Miller)
-    if (idx != 3) {
+    if (idx != Miller) {
         auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
         if (v) {
             QModelIndex rootIdx = v->rootIndex();
@@ -917,13 +723,7 @@ void Pane::goHome() { setRoot(QUrl::fromLocalFile(QDir::homePath())); }
 void Pane::onViewModeChanged(int idx) { setViewMode(idx); }
 
 int Pane::currentViewMode() const {
-    if (!stack) {
-        return 0;
-    }
-    if (stack->currentWidget() == searchResultsView) {
-        return m_savedViewModeBeforeSearch;
-    }
-    return stack->currentIndex();
+    return stack ? stack->currentIndex() : 0;
 }
 void Pane::onZoomChanged(int val) { applyIconSize(val); }
 void Pane::onNavigatorUrlChanged(const QUrl &url) {
@@ -932,103 +732,23 @@ void Pane::onNavigatorUrlChanged(const QUrl &url) {
     QTimer::singleShot(0, this, [this]() { focusView(); });
 }
 
-void Pane::applyIconSize(int px) { if (iconView) iconView->setIconSize(QSize(px,px)); }
+void Pane::applyIconSize(int px) {
+    if (iconView) iconView->setIconSize(QSize(px,px));
+    if (m_previewGenerator) m_previewGenerator->updateIcons();
+}
 
 QUrl Pane::urlForIndex(const QModelIndex &proxyIndex) const {
-    if (searchResultsView && searchResultsModel && proxyIndex.isValid() && proxyIndex.model() == searchResultsModel) {
-        const QModelIndex nameIndex = proxyIndex.sibling(proxyIndex.row(), 0);
-        return nameIndex.data(Qt::UserRole).toUrl();
-    }
-
     QModelIndex src = proxy->mapToSource(proxyIndex);
     KFileItem item = dirModel->itemForIndex(src);
     return item.url();
 }
 
-QModelIndex Pane::currentSelectionIndexForView(QAbstractItemView *view) const {
-    if (!view || !view->selectionModel()) {
-        return QModelIndex();
-    }
-
-    const QModelIndex current = view->selectionModel()->currentIndex();
-    if (current.isValid()) {
-        return current;
-    }
-
-    const auto selectedRows = view->selectionModel()->selectedRows();
-    if (!selectedRows.isEmpty()) {
-        return selectedRows.first();
-    }
-
-    return QModelIndex();
-}
-
-QModelIndex Pane::currentSelectionIndex() const {
-    if (stack->currentWidget() == miller) {
-        return QModelIndex();
-    }
-
-    auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget());
-    return currentSelectionIndexForView(view);
-}
-
-QUrl Pane::primarySelectionUrl() const {
-    if (stack->currentWidget() == miller) {
-        const QList<QUrl> urls = miller->getSelectedUrls();
-        if (!urls.isEmpty()) {
-            return urls.first();
-        }
-        return QUrl();
-    }
-
-    const QModelIndex index = currentSelectionIndex();
-    if (!index.isValid()) {
-        return QUrl();
-    }
-
-    return urlForIndex(index);
-}
-
-void Pane::selectUrlInActiveView(const QUrl &targetUrl) {
-    if (!targetUrl.isValid() || stack->currentWidget() == miller) {
-        return;
-    }
-
-    QTimer::singleShot(100, this, [this, targetUrl]() {
-        auto *view = qobject_cast<QAbstractItemView *>(stack->currentWidget());
-        if (!view || !proxy) {
-            return;
-        }
-
-        for (int i = 0; i < proxy->rowCount(); ++i) {
-            const QModelIndex index = proxy->index(i, 0);
-            if (!index.isValid() || urlForIndex(index) != targetUrl) {
-                continue;
-            }
-
-            view->setCurrentIndex(index);
-            view->scrollTo(index);
-            if (QItemSelectionModel *selection = view->selectionModel()) {
-                selection->select(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-            }
-            break;
-        }
-    });
-}
-
 void Pane::onActivated(const QModelIndex &idx) {
     QUrl url = urlForIndex(idx);
     if (!url.isValid()) return;
-
-    if (stack && stack->currentWidget() == searchResultsView && searchBox && !searchBox->text().isEmpty()) {
-        searchBox->clear();
-    }
-
-    const QFileInfo fi(url.toLocalFile());
-    if (url.isLocalFile() && fi.isDir()) {
-        if (!tryNavigateToDirectoryUrl(url, true)) {
-            return;
-        }
+    KFileItem item = dirModel->itemForIndex(proxy->mapToSource(idx));
+    if (item.isDir()) {
+        setRoot(url);
     } else {
         FileOpsService::openUrl(url, this);
     }
@@ -1037,27 +757,51 @@ void Pane::onActivated(const QModelIndex &idx) {
 }
 
 void Pane::onCurrentChanged(const QModelIndex &current, const QModelIndex &) {
-    if (!m_previewVisible) return;
     const QUrl url = urlForIndex(current);
-    if (url.isValid()) updatePreviewForUrl(url);
+    if (!url.isValid()) return;
+    if (m_previewVisible) updatePreviewForUrl(url);
+    // Update Quick Look if it's open (mirrors Miller's selectionChanged handler)
+    if (ql && ql->isVisible() && url.isLocalFile()) {
+        ql->showFile(url.toLocalFile());
+    }
 }
 
 void Pane::quickLookSelected() {
-    const QUrl url = primarySelectionUrl();
-    if (!url.isValid() || !url.isLocalFile()) return;
+    if (stack->currentWidget() == miller) {
+        const QList<QUrl> urls = miller->getSelectedUrls();
+        if (urls.isEmpty() || !urls.first().isLocalFile()) return;
+        if (!ql) ql = new QuickLookDialog(this);
+        ql->showFile(urls.first().toLocalFile());
+        return;
+    }
 
+    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+    if (!v) return;
+    
+    QUrl url = urlForIndex(v->currentIndex());
+    if (!url.isValid() || !url.isLocalFile()) return;
+    
     if (!ql) ql = new QuickLookDialog(this);
     ql->showFile(url.toLocalFile());
 }
+
 
 void Pane::setPreviewVisible(bool on) {
     m_previewVisible = on;
     if (preview) preview->setVisible(on);
     if (on) {
         // seed with current selection if any
-        const QUrl url = primarySelectionUrl();
-        if (url.isValid()) {
-            updatePreviewForUrl(url);
+        if (stack->currentWidget() == miller) {
+            const QList<QUrl> urls = miller->getSelectedUrls();
+            if (!urls.isEmpty() && urls.first().isValid()) {
+                updatePreviewForUrl(urls.first());
+            } else {
+                clearPreview();
+            }
+        } else if (auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
+            const QUrl u = urlForIndex(v->currentIndex());
+            if (u.isValid()) updatePreviewForUrl(u);
+            else clearPreview();
         } else {
             clearPreview();
         }
@@ -1077,99 +821,6 @@ void Pane::setShowHiddenFiles(bool show) {
     if (miller) {
         miller->setShowHiddenFiles(show);
     }
-
-    if (searchBox && !searchBox->text().trimmed().isEmpty()) {
-        beginSearch(searchBox->text());
-    }
-}
-
-void Pane::setShowThumbnails(bool show) {
-    m_showThumbnails = show;
-
-    if (miller) {
-        miller->setShowThumbnails(show);
-    }
-
-    for (QAbstractItemView *view : {static_cast<QAbstractItemView *>(iconView),
-                                    static_cast<QAbstractItemView *>(detailsView),
-                                    static_cast<QAbstractItemView *>(compactView),
-                                    static_cast<QAbstractItemView *>(searchResultsView)}) {
-        if (view && view->viewport()) {
-            view->viewport()->update();
-        }
-    }
-
-    if (searchBox && !searchBox->text().trimmed().isEmpty()) {
-        beginSearch(searchBox->text());
-    }
-}
-
-void Pane::setShowFileExtensions(bool show) {
-    m_showFileExtensions = show;
-
-    if (miller) {
-        miller->setShowFileExtensions(show);
-    }
-
-    for (QAbstractItemView *view : {static_cast<QAbstractItemView *>(iconView),
-                                    static_cast<QAbstractItemView *>(detailsView),
-                                    static_cast<QAbstractItemView *>(compactView),
-                                    static_cast<QAbstractItemView *>(searchResultsView)}) {
-        if (view && view->viewport()) {
-            view->viewport()->update();
-        }
-    }
-
-    if (m_previewVisible) {
-        const QUrl url = primarySelectionUrl();
-        if (url.isValid()) {
-            updatePreviewForUrl(url);
-        }
-    }
-
-    if (searchBox && !searchBox->text().trimmed().isEmpty()) {
-        beginSearch(searchBox->text());
-    }
-}
-
-void Pane::setMillerColumnWidth(int width) {
-    if (width < 150) width = 150;
-    if (width > 400) width = 400;
-
-    m_millerColumnWidth = width;
-    if (miller) {
-        miller->setColumnWidth(width);
-    }
-}
-
-void Pane::setFollowSymlinks(bool follow) {
-    m_followSymlinks = follow;
-
-    if (miller) {
-        miller->setFollowSymlinks(follow);
-    }
-}
-
-bool Pane::tryNavigateToDirectoryUrl(const QUrl &url, bool showBlockedMessage) {
-    if (!url.isValid()) {
-        return false;
-    }
-
-    if (!m_followSymlinks && isDirectorySymlinkUrl(url)) {
-        if (showBlockedMessage) {
-            const QFileInfo fi(url.toLocalFile());
-            const QString displayName = fi.fileName().isEmpty() ? url.toLocalFile() : fi.fileName();
-            QMessageBox::information(
-                this,
-                tr("Symlink Navigation Disabled"),
-                tr("'%1' is a symbolic link to a directory.\n\nEnable 'Follow symbolic links' in Preferences to navigate into it.")
-                    .arg(displayName));
-        }
-        return false;
-    }
-
-    setRoot(url);
-    return true;
 }
 
 void Pane::clearPreview() {
@@ -1192,12 +843,9 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
         }
 
         const QString displayName = fi.fileName().isEmpty() ? path : fi.fileName();
-        const QString visibleName = fi.fileName().isEmpty()
-            ? path
-            : displayNameForFileInfo(fi, m_showFileExtensions);
         const int itemCount = QDir(path).entryList(QDir::NoDotAndDotDot | QDir::AllEntries).size();
         previewText->setPlainText(QString("%1\n%2 items")
-                                  .arg(visibleName)
+                                  .arg(displayName)
                                   .arg(itemCount));
         return;
     }
@@ -1211,7 +859,7 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
             previewImage->setPixmap(pm.scaled(w, h, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }
         previewText->setPlainText(QString("%1 — %2 KB")
-                                  .arg(displayNameForFileInfo(fi, m_showFileExtensions))
+                                  .arg(fi.fileName())
                                   .arg((fi.size()+1023)/1024));
         return;
     }
@@ -1228,7 +876,7 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
                     previewImage->setPixmap(QPixmap::fromImage(img));
                 }
             }
-            previewText->setPlainText(displayNameForFileInfo(fi, m_showFileExtensions));
+            previewText->setPlainText(fi.fileName());
             return;
         }
     }
@@ -1240,7 +888,7 @@ void Pane::updatePreviewForUrl(const QUrl &u) {
     }
     
     previewText->setPlainText(QString("%1 — %2 KB")
-                              .arg(displayNameForFileInfo(fi, m_showFileExtensions))
+                              .arg(fi.fileName())
                               .arg((fi.size()+1023)/1024));
 }
 
@@ -1252,9 +900,14 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         selectedUrls = getSelectedUrls();
     }
     if (selectedUrls.isEmpty()) {
-        const QUrl current = primarySelectionUrl();
-        if (current.isValid()) {
-            selectedUrls.append(current);
+        // Try current index as fallback
+        QAbstractItemView *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+        if (v) {
+            QModelIndex idx = v->currentIndex();
+            if (idx.isValid()) {
+                QUrl u = urlForIndex(idx);
+                if (u.isValid()) selectedUrls.append(u);
+            }
         }
     }
     if (selectedUrls.isEmpty()) return;
@@ -1284,6 +937,9 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 
     QAction *actCopy = menu.addAction(multiSelect ? QString("Copy %1 Items").arg(count) : "Copy");
     actCopy->setShortcut(QKeySequence::Copy);
+
+    QAction *actCopyPath = menu.addAction("Copy Path");
+    QAction *actCopyName = menu.addAction("Copy Name");
 
     // Paste behavior: if right-clicking a single folder, offer to paste INTO it
     const QClipboard *clipboard = QGuiApplication::clipboard();
@@ -1321,6 +977,9 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     QAction *actDuplicate = menu.addAction(multiSelect ? QString("Duplicate %1 Items").arg(count) : "Duplicate");
     actDuplicate->setShortcut(QKeySequence("Ctrl+D"));
 
+    QAction *actCreateSymlink = menu.addAction("Create Symlink...");
+    actCreateSymlink->setEnabled(!multiSelect);
+
     menu.addSeparator();
 
     // --- Rename (only for single selection) ---
@@ -1356,17 +1015,30 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     menu.addSeparator();
 
     // --- Folder operations ---
+    const bool inTrash = currentRoot.scheme() == QLatin1String("trash");
     QAction *actNewFolder = menu.addAction("New Folder");
     actNewFolder->setShortcut(QKeySequence("Ctrl+Shift+N"));
+    actNewFolder->setEnabled(!inTrash);
 
     QAction *actOpenTerminal = nullptr;
-    if (!multiSelect && firstFi.isDir()) {
-        actOpenTerminal = menu.addAction(QString("Open Terminal in \"%1\"").arg(firstFi.fileName()));
-    } else {
-        actOpenTerminal = menu.addAction("Open Terminal Here");
+    if (!inTrash) {
+        if (!multiSelect && firstFi.isDir()) {
+            actOpenTerminal = menu.addAction(QString("Open Terminal in \"%1\"").arg(firstFi.fileName()));
+        } else {
+            actOpenTerminal = menu.addAction("Open Terminal Here");
+        }
     }
 
     menu.addSeparator();
+
+    // --- Broken symlink indicator ---
+    if (!multiSelect && QFileInfo(firstUrl.toLocalFile()).isSymLink()) {
+        QString symlinkTarget = QFileInfo(firstUrl.toLocalFile()).symLinkTarget();
+        if (!QFileInfo::exists(symlinkTarget)) {
+            QAction *brokenLabel = menu.addAction("(Broken Link)");
+            brokenLabel->setEnabled(false);
+        }
+    }
 
     // --- Properties ---
     QAction *actProperties = menu.addAction(multiSelect ? QString("Properties (%1 Items)").arg(count) : "Properties");
@@ -1378,12 +1050,8 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 
     // Handle actions
     if (chosen == actOpen) {
-        if (!multiSelect && firstFi.isDir()) {
-            tryNavigateToDirectoryUrl(firstUrl, true);
-        } else {
-            for (const QUrl &url : selectedUrls) {
-                FileOpsService::openUrl(url, this);
-            }
+        for (const QUrl &url : selectedUrls) {
+            FileOpsService::openUrl(url, this);
         }
         return;
     }
@@ -1404,12 +1072,41 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
         copySelected();
         return;
     }
+    if (chosen == actCopyPath) {
+        QStringList paths;
+        for (const QUrl &url : selectedUrls)
+            paths.append(url.toLocalFile());
+        QGuiApplication::clipboard()->setText(paths.join(QLatin1Char('\n')));
+        return;
+    }
+    if (chosen == actCopyName) {
+        QStringList names;
+        for (const QUrl &url : selectedUrls)
+            names.append(QFileInfo(url.toLocalFile()).fileName());
+        QGuiApplication::clipboard()->setText(names.join(QLatin1Char('\n')));
+        return;
+    }
     if (chosen == actPaste) {
         pasteFilesToDestination(pasteDestination);
         return;
     }
     if (chosen == actDuplicate) {
         duplicateSelected();
+        return;
+    }
+    if (chosen == actCreateSymlink) {
+        const QString sourcePath = firstUrl.toLocalFile();
+        const QFileInfo fi(sourcePath);
+        const QString baseName = fi.completeBaseName();
+        const QString suffix = fi.suffix();
+        QString linkName = baseName + " - link";
+        if (!suffix.isEmpty())
+            linkName += QLatin1Char('.') + suffix;
+        const QString linkPath = fi.absolutePath() + QLatin1Char('/') + linkName;
+        if (!QFile::link(sourcePath, linkPath)) {
+            QMessageBox::warning(this, "Create Symlink",
+                QString("Failed to create symlink:\n%1").arg(linkPath));
+        }
         return;
     }
     if (chosen == actRename) {
@@ -1505,27 +1202,46 @@ void Pane::showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder
 
     // Determine paste destination - use targetFolder if provided, otherwise currentRoot
     QUrl pasteDestination = targetFolder.isValid() ? targetFolder : currentRoot;
+    const bool inTrash = currentRoot.scheme() == QLatin1String("trash");
 
     QMenu menu(this);
 
-    // Add basic folder operations
-    QAction *newFolderAction = menu.addAction("New Folder");
-    newFolderAction->setShortcut(QKeySequence("Ctrl+Shift+N"));
-    connect(newFolderAction, &QAction::triggered, this, [this, pasteDestination]() {
-        createNewFolderIn(pasteDestination);
-    });
+    if (inTrash) {
+        // Trash-specific context menu
+        QAction *emptyTrashAction = menu.addAction("Empty Trash");
+        connect(emptyTrashAction, &QAction::triggered, this, [this]() {
+            auto result = QMessageBox::question(this, "Empty Trash",
+                "Permanently delete all items in the Trash?",
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (result == QMessageBox::Yes) {
+                KIO::emptyTrash();
+            }
+        });
+    } else {
+        // Add basic folder operations
+        QAction *newFolderAction = menu.addAction("New Folder");
+        newFolderAction->setShortcut(QKeySequence("Ctrl+Shift+N"));
+        connect(newFolderAction, &QAction::triggered, this, [this, pasteDestination]() {
+            createNewFolderIn(pasteDestination);
+        });
 
-    QAction *openTerminalAction = menu.addAction("Open Terminal Here");
-    connect(openTerminalAction, &QAction::triggered, this, [this, pasteDestination]() {
-        openTerminalAt(pasteDestination);
-    });
+        QAction *newFileAction = menu.addAction("New File...");
+        connect(newFileAction, &QAction::triggered, this, [this, pasteDestination]() {
+            createNewFileIn(pasteDestination);
+        });
+
+        QAction *openTerminalAction = menu.addAction("Open Terminal Here");
+        connect(openTerminalAction, &QAction::triggered, this, [this, pasteDestination]() {
+            openTerminalAt(pasteDestination);
+        });
+    }
 
     menu.addSeparator();
 
-    // Add paste if clipboard has URLs
+    // Add paste if clipboard has URLs (not in trash)
     const QClipboard *clipboard = QGuiApplication::clipboard();
     const QMimeData *mimeData = clipboard->mimeData();
-    bool canPaste = mimeData && mimeData->hasUrls();
+    bool canPaste = !inTrash && mimeData && mimeData->hasUrls();
     bool isCutOp = canPaste && isClipboardCutOperation();
     QAction *pasteAction = menu.addAction(isCutOp ? "Move Items Here" : "Paste");
     pasteAction->setEnabled(canPaste);
@@ -1539,10 +1255,10 @@ void Pane::showEmptySpaceContextMenu(const QPoint &pos, const QUrl &targetFolder
 
     // View options
     auto *viewMenu = menu.addMenu("View");
-    viewMenu->addAction("Icons", [this]() { setViewMode(0); });
-    viewMenu->addAction("Details", [this]() { setViewMode(1); });
-    viewMenu->addAction("Compact", [this]() { setViewMode(2); });
-    viewMenu->addAction("Miller Columns", [this]() { setViewMode(3); });
+    viewMenu->addAction("Icons", [this]() { setViewMode(Icons); });
+    viewMenu->addAction("Details", [this]() { setViewMode(Details); });
+    viewMenu->addAction("Compact", [this]() { setViewMode(Compact); });
+    viewMenu->addAction("Miller Columns", [this]() { setViewMode(Miller); });
 
     viewMenu->addSeparator();
     QAction *showHiddenAction = viewMenu->addAction("Show Hidden Files");
@@ -1559,9 +1275,11 @@ QList<QUrl> Pane::selectedUrls() const {
     QList<QUrl> urls = getSelectedUrls();
     if (!urls.isEmpty()) return urls;
 
-    const QUrl current = primarySelectionUrl();
-    if (current.isValid()) {
-        urls.append(current);
+    // Fallback to current item for non-Miller views.
+    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+    if (v) {
+        QUrl current = urlForIndex(v->currentIndex());
+        if (current.isValid()) urls.append(current);
     }
     return urls;
 }
@@ -1720,64 +1438,36 @@ void Pane::moveToTrash() {
 }
 
 void Pane::renameSelected() {
-    const QUrl sourceUrl = primarySelectionUrl();
-    if (!sourceUrl.isValid() || !sourceUrl.isLocalFile()) {
+    if (stack->currentWidget() == miller) {
+        miller->renameSelected();
         return;
     }
 
-    const QFileInfo sourceInfo(sourceUrl.toLocalFile());
-    const QString currentName = sourceInfo.fileName();
-    if (currentName.isEmpty()) {
-        return;
-    }
+    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+    if (!v || !v->selectionModel()) return;
 
-    int selectionLength = currentName.size();
-    if (!sourceInfo.isDir()) {
-        const int extensionDot = currentName.lastIndexOf('.');
-        if (extensionDot > 0) {
-            selectionLength = extensionDot;
-        }
-    }
+    const QModelIndex current = v->selectionModel()->currentIndex();
+    if (!current.isValid()) return;
 
-    QString newName;
-    if (!DialogUtils::promptTextInput(
-            this,
-            tr("Rename"),
-            tr("Enter a new name for \"%1\":").arg(currentName),
-            currentName,
-            &newName,
-            0,
-            selectionLength)) {
-        return;
-    }
-
-    if (newName.isEmpty() || newName == currentName) {
-        return;
-    }
-
-    if (newName == QStringLiteral(".") || newName == QStringLiteral("..") || newName.contains(QLatin1Char('/'))) {
-        QMessageBox::warning(this, tr("Invalid Name"), tr("That name is not valid for a file or folder."));
-        return;
-    }
-
-    const QUrl destinationUrl = QUrl::fromLocalFile(sourceInfo.dir().filePath(newName));
-    if (destinationUrl == sourceUrl) {
-        return;
-    }
-
-    KJob *job = FileOpsService::rename(sourceUrl, destinationUrl, this);
-    refreshPaneAfterJob(this, job);
-    connect(job, &KJob::result, this, [this, destinationUrl](KJob *finishedJob) {
-        if (!finishedJob->error()) {
-            selectUrlInActiveView(destinationUrl);
-        }
-    });
+    beginInlineRename(v, current);
 }
 
 void Pane::beginInlineRename(QAbstractItemView *view, const QModelIndex &index) {
-    Q_UNUSED(view)
-    Q_UNUSED(index)
-    renameSelected();
+    if (!view || !index.isValid()) return;
+    view->setCurrentIndex(index);
+    view->setEditTriggers(QAbstractItemView::AllEditTriggers);
+    view->edit(index);
+
+    // Connect to delegate's closeEditor to restore no-edit state when done
+    // Use a queued single-shot to avoid issues with multiple connections
+    QAbstractItemDelegate *delegate = view->itemDelegate();
+    if (delegate) {
+        // Disconnect any previous connections to avoid stacking
+        disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
+        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [view]() {
+            view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        }, Qt::QueuedConnection);
+    }
 }
 
 void Pane::createNewFolder() {
@@ -1796,53 +1486,107 @@ void Pane::createNewFolderIn(const QUrl &targetFolder) {
 
     const QString destinationPath = destinationUrl.toLocalFile();
 
+    // Create a uniquely named new folder
     QString baseName = "New Folder";
     QString folderName = baseName;
     int counter = 1;
-
+    
     QDir currentDir(destinationPath);
     while (currentDir.exists(folderName)) {
         folderName = QString("%1 %2").arg(baseName).arg(counter++);
     }
+    
+    QUrl newFolderUrl = QUrl::fromLocalFile(currentDir.filePath(folderName));
+    auto *job = FileOpsService::mkdir(newFolderUrl, this);
+    if (!job) return;
 
-    const QUrl newFolderUrl = QUrl::fromLocalFile(currentDir.filePath(folderName));
-    KJob *job = FileOpsService::mkdir(newFolderUrl, this);
+    // Select the new folder when it appears in the model (instead of a fixed timer).
+    if (destinationUrl == currentRoot) {
+        auto *conn = new QMetaObject::Connection;
+        *conn = connect(proxy, &QAbstractItemModel::rowsInserted, this,
+            [this, folderName, conn](const QModelIndex &parent, int first, int last) {
+                for (int i = first; i <= last; ++i) {
+                    QModelIndex idx = proxy->index(i, 0, parent);
+                    if (idx.data(Qt::DisplayRole).toString() == folderName) {
+                        if (auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
+                            view->setCurrentIndex(idx);
+                            view->scrollTo(idx);
+                        }
+                        disconnect(*conn);
+                        delete conn;
+                        return;
+                    }
+                }
+            });
+    }
     refreshPaneAfterJob(this, job);
-    connect(job, &KJob::result, this, [this, destinationUrl, newFolderUrl](KJob *finishedJob) {
-        if (!finishedJob->error() && destinationUrl == currentRoot) {
-            selectUrlInActiveView(newFolderUrl);
-        }
-    });
 }
 
-void Pane::goBack() {
-    if (!canGoBack()) return;
-    applyLocation(m_navigationState.goBack(), true);
-}
+void Pane::createNewFileIn(const QUrl &targetFolder) {
+    QUrl destinationUrl = targetFolder;
+    if (!destinationUrl.isValid() || !destinationUrl.isLocalFile()) {
+        destinationUrl = currentRoot;
+    }
+    if (!destinationUrl.isValid() || !destinationUrl.isLocalFile()) {
+        return;
+    }
 
-void Pane::goForward() {
-    if (!canGoForward()) return;
-    applyLocation(m_navigationState.goForward(), true);
-}
+    bool ok = false;
+    QString fileName = QInputDialog::getText(this, "New File", "File name:", QLineEdit::Normal, QString(), &ok);
+    if (!ok || fileName.trimmed().isEmpty()) return;
 
-bool Pane::canGoBack() const {
-    return m_navigationState.canGoBack();
-}
+    QString filePath = QDir(destinationUrl.toLocalFile()).filePath(fileName.trimmed());
+    QFile file(filePath);
+    if (file.exists()) {
+        QMessageBox::warning(this, "New File", QString("A file named \"%1\" already exists.").arg(fileName));
+        return;
+    }
+    if (!file.open(QIODevice::WriteOnly)) {
+        QMessageBox::warning(this, "New File", QString("Failed to create file:\n%1").arg(filePath));
+        return;
+    }
+    file.close();
 
-bool Pane::canGoForward() const {
-    return m_navigationState.canGoForward();
-}
-
-void Pane::refreshCurrentLocation() {
+    // Refresh directory listing
     if (dirModel) {
         if (auto *lister = dirModel->dirLister()) {
-            lister->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
+            lister->updateDirectory(destinationUrl);
         }
     }
     if (proxy) {
         proxy->invalidate();
     }
     updateStatus();
+}
+
+void Pane::goBack() {
+    if (!canGoBack()) return;
+    m_historyIndex--;
+    navigateToHistoryEntry(m_history[m_historyIndex]);
+}
+
+void Pane::goForward() {
+    if (!canGoForward()) return;
+    m_historyIndex++;
+    navigateToHistoryEntry(m_history[m_historyIndex]);
+}
+
+void Pane::navigateToHistoryEntry(const QUrl &url) {
+    currentRoot = url;
+    if (auto *l = dirModel->dirLister()) {
+        l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
+    }
+    if (miller) miller->setRootUrl(url);
+    syncNavigatorLocation(url);
+    emit urlChanged(url);
+}
+
+bool Pane::canGoBack() const {
+    return m_historyIndex > 0;
+}
+
+bool Pane::canGoForward() const {
+    return m_historyIndex >= 0 && m_historyIndex < m_history.size() - 1;
 }
 
 void Pane::generateThumbnail(const QUrl &url) const {
@@ -1900,10 +1644,6 @@ void Pane::generateThumbnail(const QUrl &url) const {
 
 QIcon Pane::getIconForFile(const QUrl &url) const {
     if (!url.isLocalFile()) return QIcon();
-
-    if (!m_showThumbnails) {
-        return QIcon();
-    }
     
     // Check if we have a thumbnail
     if (thumbs && thumbs->has(url)) {
@@ -1933,13 +1673,23 @@ QIcon Pane::getIconForFile(const QUrl &url) const {
 }
 
 void Pane::updateStatus() {
+    if (!proxy) return;
+
+    int totalFiles = proxy->rowCount();
     int selectedFiles = 0;
     qint64 selectedSize = 0;
-    int totalFiles = 0;
+    QString extraInfo;
+
+    auto checkBrokenSymlink = [&extraInfo](const QList<QUrl> &urls) {
+        if (urls.size() == 1 && urls.first().isLocalFile()) {
+            QFileInfo fi(urls.first().toLocalFile());
+            if (fi.isSymLink() && !QFileInfo::exists(fi.symLinkTarget())) {
+                extraInfo = QStringLiteral(" (broken link)");
+            }
+        }
+    };
 
     if (stack->currentWidget() == miller) {
-        if (!proxy) return;
-        totalFiles = proxy->rowCount();
         const QList<QUrl> selected = miller->getSelectedUrls();
         selectedFiles = selected.size();
         for (const QUrl &url : selected) {
@@ -1949,17 +1699,12 @@ void Pane::updateStatus() {
                 selectedSize += fi.size();
             }
         }
-        emit statusChanged(totalFiles, selectedFiles, selectedSize);
+        checkBrokenSymlink(selected);
+        emit statusChanged(totalFiles, selectedFiles, selectedSize, extraInfo);
         return;
     }
 
-    if (stack->currentWidget() == searchResultsView) {
-        totalFiles = searchResultsModel ? searchResultsModel->rowCount() : 0;
-    } else {
-        if (!proxy) return;
-        totalFiles = proxy->rowCount();
-    }
-
+    QList<QUrl> selectedUrlsList;
     auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
     if (v && v->selectionModel()) {
         const auto selectedRows = v->selectionModel()->selectedRows();
@@ -1968,6 +1713,7 @@ void Pane::updateStatus() {
         // Calculate total size of selected files
         for (const auto &idx : selectedRows) {
             QUrl url = urlForIndex(idx);
+            selectedUrlsList.append(url);
             if (url.isLocalFile()) {
                 QFileInfo fi(url.toLocalFile());
                 if (fi.isFile()) {
@@ -1977,17 +1723,32 @@ void Pane::updateStatus() {
         }
     }
 
-    emit statusChanged(totalFiles, selectedFiles, selectedSize);
+    checkBrokenSymlink(selectedUrlsList);
+    emit statusChanged(totalFiles, selectedFiles, selectedSize, extraInfo);
+}
+
+void Pane::updateEmptyFolderOverlay() {
+    if (!m_emptyFolderLabel || !proxy) return;
+    bool empty = (proxy->rowCount() == 0);
+    m_emptyFolderLabel->setVisible(empty);
+    if (empty) {
+        // Position the label centered within the stack widget
+        m_emptyFolderLabel->setGeometry(stack->rect());
+        m_emptyFolderLabel->raise();
+    }
 }
 
 void Pane::openSelected() {
     if (stack->currentWidget() == miller) {
-        const QUrl url = primarySelectionUrl();
+        const QList<QUrl> urls = miller->getSelectedUrls();
+        if (urls.isEmpty()) return;
+
+        const QUrl url = urls.first();
         if (!url.isValid()) return;
 
         QFileInfo fi(url.toLocalFile());
         if (fi.isDir()) {
-            tryNavigateToDirectoryUrl(url, true);
+            setRoot(url);
         } else {
             FileOpsService::openUrl(url, this);
         }
@@ -1996,7 +1757,10 @@ void Pane::openSelected() {
         return;
     }
 
-    const QModelIndex idx = currentSelectionIndex();
+    auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget());
+    if (!v || !v->selectionModel()) return;
+
+    QModelIndex idx = v->currentIndex();
     if (!idx.isValid()) return;
 
     onActivated(idx);
@@ -2009,12 +1773,102 @@ void Pane::setZoomValue(int value) {
     applyIconSize(value);
 }
 
+void Pane::refreshCurrentLocation() {
+    if (auto *l = dirModel->dirLister()) {
+        l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
+    }
+}
+
+QString Pane::adjacentFilePath(const QString &currentPath, int offset) const {
+    if (currentPath.isEmpty()) return {};
+
+    // Miller view: navigate within the active column's QFileSystemModel
+    if (stack->currentWidget() == miller) {
+        const auto columns = miller->findChildren<QListView*>();
+        // Find the column whose selection contains the current file
+        for (auto *col : columns) {
+            auto *fsModel = qobject_cast<QFileSystemModel*>(col->model());
+            if (!fsModel) continue;
+            QModelIndex current = col->currentIndex();
+            if (!current.isValid()) continue;
+            if (fsModel->filePath(current) == currentPath) {
+                int targetRow = current.row() + offset;
+                QModelIndex root = col->rootIndex();
+                if (targetRow < 0 || targetRow >= fsModel->rowCount(root)) return {};
+                QModelIndex target = fsModel->index(targetRow, 0, root);
+                return fsModel->filePath(target);
+            }
+        }
+        return {};
+    }
+
+    // Classic views: navigate within the KDirModel proxy
+    if (!proxy) return {};
+    const int rows = proxy->rowCount();
+    int currentRow = -1;
+    for (int i = 0; i < rows; ++i) {
+        QModelIndex idx = proxy->index(i, 0);
+        QModelIndex src = proxy->mapToSource(idx);
+        KFileItem item = dirModel->itemForIndex(src);
+        if (item.localPath() == currentPath) {
+            currentRow = i;
+            break;
+        }
+    }
+
+    if (currentRow < 0) return {};
+
+    int targetRow = currentRow + offset;
+    if (targetRow < 0 || targetRow >= rows) return {};
+
+    QModelIndex targetIdx = proxy->index(targetRow, 0);
+    QModelIndex targetSrc = proxy->mapToSource(targetIdx);
+    KFileItem targetItem = dirModel->itemForIndex(targetSrc);
+    return targetItem.localPath();
+}
+
+bool Pane::isMillerViewActive() const {
+    return stack && stack->currentWidget() == miller;
+}
+
+
+
+void Pane::selectFileInView(const QString &filePath) {
+    if (filePath.isEmpty()) return;
+    QUrl fileUrl = QUrl::fromLocalFile(filePath);
+
+    if (stack->currentWidget() == miller) {
+        // Miller: find the column whose root is the file's parent directory
+        QFileInfo fi(filePath);
+        QString parentPath = fi.absolutePath();
+        for (auto *col : miller->findChildren<QListView*>()) {
+            auto *fsModel = qobject_cast<QFileSystemModel*>(col->model());
+            if (!fsModel || fsModel->rootPath() != parentPath) continue;
+            QModelIndex idx = fsModel->index(filePath);
+            if (idx.isValid()) {
+                col->setCurrentIndex(idx);
+                col->scrollTo(idx);
+                return;
+            }
+        }
+    } else if (proxy && dirModel) {
+        // Classic views: find in the proxy model
+        QModelIndex srcIdx = dirModel->indexForUrl(fileUrl);
+        if (!srcIdx.isValid()) return;
+        QModelIndex proxyIdx = proxy->mapFromSource(srcIdx);
+        if (!proxyIdx.isValid()) return;
+        if (auto *v = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
+            v->setCurrentIndex(proxyIdx);
+            v->scrollTo(proxyIdx);
+        }
+    }
+}
+
+
 void Pane::focusView() {
     // Focus the current view widget
     if (stack->currentWidget() == miller) {
         miller->focusLastColumn();
-    } else if (stack->currentWidget() == searchResultsView && searchResultsView) {
-        searchResultsView->setFocus();
     } else if (auto *view = qobject_cast<QAbstractItemView*>(stack->currentWidget())) {
         view->setFocus();
     }
@@ -2030,7 +1884,7 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
         QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Space) {
             // Handle spacebar for QuickLook in all view modes
-            const QModelIndex current = currentSelectionIndexForView(view);
+            QModelIndex current = view->currentIndex();
             if (current.isValid()) {
                 QUrl url = urlForIndex(current);
                 if (url.isValid()) {
@@ -2041,26 +1895,26 @@ bool Pane::eventFilter(QObject *obj, QEvent *event) {
         }
 
         if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) {
-            const QModelIndex current = currentSelectionIndexForView(view);
+            QModelIndex current = view->currentIndex();
             if (!current.isValid()) {
                 return true;
             }
 
-        if (view == searchResultsView || keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
-            onActivated(current);  // Ctrl+Enter opens selection.
-        } else {
-            renameSelected();  // Return renames selection.
-        }
-        return true;
-    }
-
-    if (keyEvent->key() == Qt::Key_F2) {
-        const QModelIndex current = currentSelectionIndexForView(view);
-        if (current.isValid()) {
-            renameSelected();
+            if (keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
+                onActivated(current);  // Ctrl+Enter opens selection.
+            } else {
+                beginInlineRename(view, current);  // Return renames selection.
+            }
             return true;
         }
-    }
+
+        if (keyEvent->key() == Qt::Key_F2) {
+            QModelIndex current = view->currentIndex();
+            if (current.isValid()) {
+                beginInlineRename(view, current);
+                return true;
+            }
+        }
 
         if (!keyEvent->modifiers().testFlag(Qt::ControlModifier)
             && !keyEvent->modifiers().testFlag(Qt::AltModifier)
@@ -2083,14 +1937,27 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     QFileInfo fi(filePath);
 
     // Get MIME type
-    QMimeDatabase db;
+    static const QMimeDatabase db;
     QMimeType mimeType = db.mimeTypeForFile(filePath);
     QString mimeTypeName = mimeType.name();
 
-    auto *dialog = new QDialog;
-    DialogUtils::prepareModalDialog(dialog, window(), QString("Open %1 with...").arg(fi.fileName()), QSize(520, 420));
+    auto *dialog = new QDialog(
+        nullptr,
+        Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint
+    );
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setWindowTitle(QString("Open %1 with...").arg(fi.fileName()));
+    dialog->setModal(true);
+    dialog->setWindowModality(Qt::ApplicationModal);
+    dialog->setFixedSize(520, 420);
     dialog->setStyleSheet(
-        DialogUtils::finderDialogStyleSheet() +
+        "QDialog { "
+            "background-color: rgba(42, 44, 49, 235); "
+            "color: #e8eaed; "
+            "border: 1px solid rgba(95, 102, 114, 200); "
+            "border-radius: 12px; "
+        "}"
+        "QLabel { color: #e8eaed; background: transparent; }"
         "QListWidget { "
             "background-color: rgba(34, 36, 41, 240); "
             "color: #f5f7fa; "
@@ -2103,6 +1970,15 @@ void Pane::showOpenWithDialog(const QUrl &url) {
             "background-color: rgba(74, 144, 226, 210); "
             "color: #f5f7fa; "
         "}"
+        "QPushButton { "
+            "background-color: rgba(58, 62, 68, 235); "
+            "color: #e8eaed; "
+            "border: 1px solid #6f7785; "
+            "border-radius: 6px; "
+            "padding: 4px 12px; "
+        "}"
+        "QPushButton:hover { border-color: #8bbcff; }"
+        "QPushButton:pressed { background-color: rgba(72, 77, 85, 245); }"
     );
 
     auto *layout = new QVBoxLayout(dialog);
@@ -2232,7 +2108,14 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     connect(buttonBox, &QDialogButtonBox::rejected, dialog, &QDialog::close);
     connect(listWidget, &QListWidget::itemDoubleClicked, dialog, runSelection);
 
-    DialogUtils::presentDialog(dialog, listWidget);
+    const QRect parentFrame = window()->frameGeometry();
+    const QPoint centeredTopLeft = parentFrame.center()
+        - QPoint(dialog->width() / 2, dialog->height() / 2);
+    dialog->move(centeredTopLeft);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+    listWidget->setFocus(Qt::OtherFocusReason);
 }
 
 void Pane::compressSelected() {
@@ -2365,9 +2248,9 @@ void Pane::compressSelected() {
     QProgressDialog *progress = createBusyProgressDialog(
         this,
         tr("Compressing"),
-        tr("Creating \"%1\"…").arg(archiveName));
+        tr("Creating \"%1\"...").arg(archiveName));
     ArchiveService *service = ArchiveService::createArchive(urls, archivePath, this);
-    connect(service, &ArchiveService::finished, this, [this, progress, archivePath, archiveName](bool success, const QString &errorMessage) {
+    connect(service, &ArchiveService::finished, this, [this, progress, archiveName](bool success, const QString &errorMessage) {
         progress->close();
         progress->deleteLater();
 
@@ -2382,7 +2265,6 @@ void Pane::compressSelected() {
         }
 
         refreshCurrentLocation();
-        selectUrlInActiveView(QUrl::fromLocalFile(archivePath));
     });
 }
 
@@ -2418,7 +2300,7 @@ void Pane::extractArchiveToNewFolder(const QUrl &archiveUrl) {
     const QFileInfo fi(archiveUrl.toLocalFile());
     const QString baseFolderName = stripKnownArchiveExtension(fi.fileName());
     const QString extractDir = uniqueChildPath(fi.absolutePath(), baseFolderName);
-    runArchiveExtraction(archiveUrl, extractDir, QUrl::fromLocalFile(extractDir));
+    runArchiveExtraction(archiveUrl, extractDir);
 }
 
 void Pane::runArchiveExtraction(const QUrl &archiveUrl, const QString &extractDir, const QUrl &selectUrlOnSuccess) {
@@ -2459,9 +2341,9 @@ void Pane::runArchiveExtraction(const QUrl &archiveUrl, const QString &extractDi
                 tr("Choose whether to replace the existing items or extract into a new folder instead."));
             conflictDialog.setDetailedText(conflicts.join(QLatin1Char('\n')));
 
-            auto *newFolderButton = conflictDialog.addButton(tr("Extract to New Folder"), QMessageBox::AcceptRole);
-            auto *replaceButton = conflictDialog.addButton(tr("Replace Existing"), QMessageBox::DestructiveRole);
-            auto *cancelButton = conflictDialog.addButton(QMessageBox::Cancel);
+            QPushButton *newFolderButton = qobject_cast<QPushButton*>(conflictDialog.addButton(tr("Extract to New Folder"), QMessageBox::AcceptRole));
+            QPushButton *replaceButton = qobject_cast<QPushButton*>(conflictDialog.addButton(tr("Replace Existing"), QMessageBox::DestructiveRole));
+            QPushButton *cancelButton = qobject_cast<QPushButton*>(conflictDialog.addButton(QMessageBox::Cancel));
             conflictDialog.setDefaultButton(newFolderButton);
 
             const QString previewText = summarizeConflictPaths(conflicts);
@@ -2479,7 +2361,7 @@ void Pane::runArchiveExtraction(const QUrl &archiveUrl, const QString &extractDi
             if (conflictDialog.clickedButton() == newFolderButton) {
                 const QString baseFolderName = stripKnownArchiveExtension(fi.fileName());
                 const QString alternateExtractDir = uniqueChildPath(extractDir, baseFolderName);
-                runArchiveExtraction(archiveUrl, alternateExtractDir, QUrl::fromLocalFile(alternateExtractDir));
+                runArchiveExtraction(archiveUrl, alternateExtractDir);
                 return;
             }
             if (conflictDialog.clickedButton() == replaceButton) {
@@ -2493,9 +2375,9 @@ void Pane::runArchiveExtraction(const QUrl &archiveUrl, const QString &extractDi
     QProgressDialog *progress = createBusyProgressDialog(
         this,
         tr("Extracting"),
-        tr("Extracting \"%1\"…").arg(fi.fileName()));
+        tr("Extracting \"%1\"...").arg(fi.fileName()));
     ArchiveService *service = ArchiveService::extractArchive(archiveUrl, extractDir, conflictPolicy, this);
-    connect(service, &ArchiveService::finished, this, [this, progress, fi, extractDir, selectUrlOnSuccess](bool success, const QString &errorMessage) {
+    connect(service, &ArchiveService::finished, this, [this, progress, fi, extractDir](bool success, const QString &errorMessage) {
         progress->close();
         progress->deleteLater();
 
@@ -2514,16 +2396,6 @@ void Pane::runArchiveExtraction(const QUrl &archiveUrl, const QString &extractDi
         if (cleanExtractDir == cleanCurrentRoot) {
             refreshCurrentLocation();
             return;
-        }
-
-        if (selectUrlOnSuccess.isValid() && selectUrlOnSuccess.isLocalFile()) {
-            const QString selectedPath = QDir::cleanPath(selectUrlOnSuccess.toLocalFile());
-            const QString selectedParent = QDir::cleanPath(QFileInfo(selectedPath).absolutePath());
-            if (selectedParent == cleanCurrentRoot) {
-                refreshCurrentLocation();
-                selectUrlInActiveView(selectUrlOnSuccess);
-                return;
-            }
         }
 
         QMessageBox::information(
@@ -2609,7 +2481,7 @@ void Pane::duplicateSelected() {
         }
 
         const auto op = state->ops.at(state->index++);
-        KIO::CopyJob *job = FileOpsService::copyAs(op.first, op.second, this);
+        KIO::CopyJob *job = KIO::copyAs(op.first, op.second, KIO::HideProgressInfo);
         connect(job, &KJob::result, this, [state, runNext](KJob *finishedJob) {
             if (finishedJob->error()) {
                 state->failures++;

@@ -476,6 +476,23 @@ QuickLookDialog::QuickLookDialog(Pane *parentPane) : QDialog(parentPane), pane(p
     downShortcut = new QShortcut(QKeySequence(Qt::Key_Down), this);
     connect(downShortcut, &QShortcut::activated, this, &QuickLookDialog::navigateNext);
 
+    // Left/Right behavior depends on view mode:
+    // - Miller: forward to Miller for column navigation (left=back, right=drill in).
+    //   Quick Look auto-updates via Miller's selectionChanged signal.
+    // - Icon/Details/Compact: prev/next file in model order.
+    // Left/Right navigate prev/next in classic views.
+    // In Miller, left/right are column navigation — not supported from Quick Look
+    // (close Quick Look first, navigate columns, then reopen).
+    leftShortcut = new QShortcut(QKeySequence(Qt::Key_Left), this);
+    connect(leftShortcut, &QShortcut::activated, this, [this]{
+        if (pane && !pane->isMillerViewActive()) navigatePrevious();
+    });
+
+    rightShortcut = new QShortcut(QKeySequence(Qt::Key_Right), this);
+    connect(rightShortcut, &QShortcut::activated, this, [this]{
+        if (pane && !pane->isMillerViewActive()) navigateNext();
+    });
+
     // YouTube-style transport keys.
     jShortcut = new QShortcut(QKeySequence(Qt::Key_J), this);
     connect(jShortcut, &QShortcut::activated, this, [this]() {
@@ -880,26 +897,18 @@ void QuickLookDialog::showFile(const QString &path) {
 
 void QuickLookDialog::navigateNext() {
     if (currentFilePath.isEmpty() || !pane) return;
-
-    QFileInfo fi(currentFilePath);
-    QDir dir(fi.absolutePath());
-    QStringList files = dir.entryList(QDir::Files, QDir::Name);
-    int idx = files.indexOf(fi.fileName());
-
-    if (idx >= 0 && idx < files.count() - 1) {
-        showFile(dir.absoluteFilePath(files[idx + 1]));
+    QString next = pane->adjacentFilePath(currentFilePath, +1);
+    if (!next.isEmpty()) {
+        showFile(next);
+        pane->selectFileInView(next);
     }
 }
 
 void QuickLookDialog::navigatePrevious() {
     if (currentFilePath.isEmpty() || !pane) return;
-
-    QFileInfo fi(currentFilePath);
-    QDir dir(fi.absolutePath());
-    QStringList files = dir.entryList(QDir::Files, QDir::Name);
-    int idx = files.indexOf(fi.fileName());
-
-    if (idx > 0) {
-        showFile(dir.absoluteFilePath(files[idx - 1]));
+    QString prev = pane->adjacentFilePath(currentFilePath, -1);
+    if (!prev.isEmpty()) {
+        showFile(prev);
+        pane->selectFileInView(prev);
     }
 }
