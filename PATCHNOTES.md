@@ -1,5 +1,43 @@
 # KMiller File Manager - Release Notes
 
+## Version 5.25.4
+**Released: April 2026**
+
+### Daily-Driver Parity Improvements
+- Added a release-readiness pass focused on reducing Dolphin/Thunar fallback moments.
+- Centralized pane navigation history through `PaneNavigationState`.
+- Added `Show in Parent Folder` for single local selections.
+- Improved recursive search wording, tooltip, and active visual state.
+- Standardized Open With dialog presentation and custom command prompting.
+- Added a GIO MIME-association fallback so Open With can populate from the same shared handler data Thunar sees when KDE's service cache is stale.
+- Moved Open With app discovery and app launching into `OpenWithService`, keeping the pane UI stable while reducing `Pane.cpp` responsibility.
+
+### Settings Truthfulness
+- Miller column width setting now applies to existing and newly-created Miller columns.
+- Follow symbolic links now affects directory symlink navigation in Pane and Miller views.
+- Hid the unimplemented file-extension setting until display behavior is real.
+
+### File Operation Trust
+- Paste/move refreshes destination and source parent folders.
+- Duplicate now routes through `FileOpsService::copyAs()`.
+- Duplicate success uses status-bar feedback instead of a modal.
+- Copy, move, trash, permanent delete, and new-folder actions report status-bar success/error feedback.
+- Inline rename cleanup no longer blanket-disconnects delegate `closeEditor` handlers.
+
+### QA
+- Added `--path <folder>` for opening KMiller against disposable fixtures.
+- Added `--qa-fixture <folder>` for noninteractive file-operation checks.
+- Added `--qa-ui-logic <folder>` for initial-path and symlink-follow checks.
+- Added `--qa-open-with <file>` for noninteractive Open With app-discovery checks.
+- Added `--qa-archive <folder>` for noninteractive archive create/extract/conflict checks.
+- Expanded archive QA with hostile `../`, nested traversal, and absolute-path entries; extraction must keep them contained inside the target folder.
+- Expanded fixture operations QA to cover rename and permanent delete on disposable files.
+- Added `tools/qa_headless.sh` for fixture operations, UI logic checks, and Xvfb GUI smoke.
+- Added `tools/kmiller_manual_qa_harness.py`, a PyQt6 floating manual QA coach for Cody's disposable test folder.
+- Added `tools/run_manual_qa_harness.sh` as a convenience launcher for the guided manual QA harness.
+
+---
+
 ## Version 5.25 (Current)
 **Released: December 2025**
 

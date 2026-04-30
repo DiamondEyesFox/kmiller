@@ -3,6 +3,7 @@
 #include <QUrl>
 #include <QVector>
 #include <QElapsedTimer>
+#include <QMetaObject>
 #include <QPersistentModelIndex>
 #include <QPointer>
 
@@ -15,6 +16,7 @@ public:
     explicit MillerView(QWidget *parent = nullptr);
     void setRootUrl(const QUrl &url);
     void setShowHiddenFiles(bool show);
+    void setFollowSymlinks(bool follow);
     void setSort(int column, Qt::SortOrder order);
     void setColumnWidth(int width);
     void focusLastColumn();
@@ -43,6 +45,7 @@ private:
     QVector<QListView*> columns;
     QUrl root;
     bool m_showHiddenFiles = false;
+    bool m_followSymlinks = false;
     int m_columnWidth = 200;
 
     // Type-to-select state
@@ -56,6 +59,7 @@ private:
 
     // Inline rename state
     bool m_isEditing = false;
+    QMetaObject::Connection m_closeEditorConnection;
 
     // Sort state kept in sync with Pane sort actions.
     int m_sortColumn = 0;

@@ -7,6 +7,7 @@
 #include "PropertiesDialog.h"
 #include "FileOpsService.h"
 #include "ArchiveService.h"
+#include "OpenWithService.h"
 #include <KFilePreviewGenerator>
 
 // Qt Core
@@ -22,6 +23,7 @@
 #include <QTimer>
 #include <QStandardPaths>
 #include <QFileSystemModel>
+#include <QSet>
 #include <functional>
 #include <memory>
 
@@ -63,17 +65,14 @@
 #include <QVBoxLayout>
 
 // KDE Frameworks
-#include <KApplicationTrader>
 #include <KDirLister>
 #include <KDirModel>
 #include <KDirSortFilterProxyModel>
 #include <KFileItem>
 #include <KJob>
-#include <KIO/ApplicationLauncherJob>
 #include <KIO/CopyJob>
 #include <KIO/DeleteJob>
 #include <KIO/MkdirJob>
-#include <KService>
 #include <KUrlNavigator>
 #include <KIO/EmptyTrashJob>
 
@@ -281,14 +280,42 @@ static bool confirmDeleteAction(QWidget *parent, const QList<QUrl> &urls, bool p
     return reply == QMessageBox::Yes;
 }
 
-static void refreshPaneAfterJob(Pane *pane, KJob *job) {
+static void refreshPaneAfterJob(Pane *pane, KJob *job, const QString &successMessage = QString()) {
     if (!pane || !job) {
         return;
     }
 
-    QObject::connect(job, &KJob::result, pane, [pane](KJob *) {
+    QObject::connect(job, &KJob::result, pane, [pane, successMessage](KJob *finishedJob) {
         pane->refreshCurrentLocation();
+        if (finishedJob->error()) {
+            emit pane->statusChanged(0, 0, 0, finishedJob->errorString());
+        } else if (!successMessage.isEmpty()) {
+            emit pane->statusChanged(0, 0, 0, successMessage);
+        }
     });
+}
+
+static QList<QUrl> parentDirectoriesForUrls(const QList<QUrl> &urls) {
+    QList<QUrl> parents;
+    QSet<QString> seen;
+
+    for (const QUrl &url : urls) {
+        QUrl parentUrl;
+        if (url.isLocalFile()) {
+            const QString parentPath = QFileInfo(url.toLocalFile()).absolutePath();
+            parentUrl = QUrl::fromLocalFile(parentPath);
+        } else {
+            parentUrl = url.adjusted(QUrl::RemoveFilename | QUrl::StripTrailingSlash);
+        }
+
+        const QString key = parentUrl.toString();
+        if (parentUrl.isValid() && !seen.contains(key)) {
+            seen.insert(key);
+            parents.append(parentUrl);
+        }
+    }
+
+    return parents;
 }
 
 
@@ -309,7 +336,8 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     // Search on the right side
     tb->addWidget(new QLabel(" Search "));
     searchBox = new QLineEdit(this);
-    searchBox->setPlaceholderText("Search files...");
+    searchBox->setPlaceholderText("Search current folder tree...");
+    searchBox->setToolTip("Recursive search. Clear the field to return to the previous folder.");
     searchBox->setFixedWidth(150);
     searchBox->setClearButtonEnabled(true);
     tb->addWidget(searchBox);
@@ -553,6 +581,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
     connect(searchBox, &QLineEdit::textChanged, this, [this](const QString &text){
         m_searchDebounce->stop();
         if (text.isEmpty()) {
+            searchBox->setStyleSheet(QString());
             // Clear search: navigate back to pre-search URL
             if (m_preSearchUrl.isValid()) {
                 QUrl restoreUrl = m_preSearchUrl;
@@ -560,6 +589,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
                 setRoot(restoreUrl);
             }
         } else {
+            searchBox->setStyleSheet("QLineEdit { border: 1px solid #6db3ff; border-radius: 4px; }");
             m_searchDebounce->start();
         }
     });
@@ -573,6 +603,7 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
         QUrl searchUrl(QStringLiteral("filenamesearch:/?search=%1&url=%2&checkContent=no")
             .arg(QString::fromUtf8(QUrl::toPercentEncoding(text)),
                  QString::fromUtf8(QUrl::toPercentEncoding(m_preSearchUrl.toString()))));
+        emit statusChanged(0, 0, 0, QString("Searching for \"%1\"").arg(text));
         setRoot(searchUrl);
     });
     connect(searchBox, &QLineEdit::returnPressed, this, [this](){
@@ -586,6 +617,8 @@ Pane::Pane(const QUrl &startUrl, QWidget *parent) : QWidget(parent) {
         QUrl searchUrl(QStringLiteral("filenamesearch:/?search=%1&url=%2&checkContent=no")
             .arg(QString::fromUtf8(QUrl::toPercentEncoding(text)),
                  QString::fromUtf8(QUrl::toPercentEncoding(m_preSearchUrl.toString()))));
+        searchBox->setStyleSheet("QLineEdit { border: 1px solid #6db3ff; border-radius: 4px; }");
+        emit statusChanged(0, 0, 0, QString("Searching for \"%1\"").arg(text));
         setRoot(searchUrl);
     });
 
@@ -680,21 +713,11 @@ void Pane::setRoot(const QUrl &url) {
         }
     }
 
-    // Add to history if this is a new navigation (not back/forward)
-    if (currentRoot != url && m_historyIndex >= 0) {
-        // Remove any forward history when navigating to a new location
-        while (m_history.size() > m_historyIndex + 1) {
-            m_history.removeLast();
-        }
-        m_history.append(url);
-        m_historyIndex = m_history.size() - 1;
-    } else if (m_historyIndex < 0) {
-        // First navigation
-        m_history.clear();
-        m_history.append(url);
-        m_historyIndex = 0;
-    }
-    
+    m_navigationState.navigateTo(url);
+    applyLocation(url);
+}
+
+void Pane::applyLocation(const QUrl &url) {
     currentRoot = url;
     if (auto *l = dirModel->dirLister()) {
         l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
@@ -880,7 +903,11 @@ void Pane::onActivated(const QModelIndex &idx) {
     if (!url.isValid()) return;
     KFileItem item = dirModel->itemForIndex(proxy->mapToSource(idx));
     if (item.isDir()) {
-        setRoot(url);
+        if (shouldNavigateIntoDirectory(url)) {
+            setRoot(url);
+        } else {
+            emit statusChanged(0, 0, 0, "Link folder not opened. Enable Follow symbolic links in Settings to navigate into it.");
+        }
     } else {
         FileOpsService::openUrl(url, this);
     }
@@ -963,7 +990,6 @@ void Pane::setShowThumbnails(bool show) {
 
 void Pane::setShowFileExtensions(bool show) {
     m_showFileExtensions = show;
-    // Display logic to be implemented; the setting is now stored and read.
 }
 
 void Pane::setMillerColumnWidth(int width) {
@@ -974,7 +1000,9 @@ void Pane::setMillerColumnWidth(int width) {
 
 void Pane::setFollowSymlinks(bool follow) {
     m_followSymlinks = follow;
-    // Navigation code can check m_followSymlinks when resolving directory symlinks.
+    if (miller) {
+        miller->setFollowSymlinks(follow);
+    }
 }
 
 void Pane::clearPreview() {
@@ -1079,6 +1107,9 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
 
     QAction *actOpenWith = menu.addAction("Open With...");
     actOpenWith->setEnabled(!multiSelect);  // Only for single selection
+
+    QAction *actReveal = menu.addAction("Show in Parent Folder");
+    actReveal->setEnabled(!multiSelect && firstUrl.isLocalFile());
 
     QAction *actQL = menu.addAction("Quick Look");
     actQL->setShortcut(Qt::Key_Space);
@@ -1211,6 +1242,16 @@ void Pane::showContextMenu(const QPoint &globalPos, const QList<QUrl> &urls)
     }
     if (chosen == actOpenWith) {
         showOpenWithDialog(firstUrl);
+        return;
+    }
+    if (chosen == actReveal) {
+        const QFileInfo fi(firstUrl.toLocalFile());
+        const QUrl parentUrl = QUrl::fromLocalFile(fi.absolutePath());
+        const QString selectedPath = fi.absoluteFilePath();
+        setRoot(parentUrl);
+        QTimer::singleShot(0, this, [this, selectedPath]() {
+            selectFileInView(selectedPath);
+        });
         return;
     }
     if (chosen == actQL) {
@@ -1489,15 +1530,34 @@ void Pane::pasteFilesToDestination(const QUrl &destination) {
     const bool isCut = FileOpsService::isClipboardCutOperation(mimeData);
 
     if (isCut) {
+        const QList<QUrl> sourceParents = parentDirectoriesForUrls(urls);
         KIO::CopyJob *job = FileOpsService::move(urls, destination, this);
-        refreshPaneAfterJob(this, job);
+        connect(job, &KJob::result, this, [this, destination, sourceParents, urls](KJob *finishedJob) {
+            refreshLocation(destination);
+            for (const QUrl &sourceParent : sourceParents) {
+                refreshLocation(sourceParent);
+            }
+            if (finishedJob->error()) {
+                emit statusChanged(0, 0, 0, finishedJob->errorString());
+            } else {
+                emit statusChanged(0, 0, 0, QString("Moved %1 item(s).").arg(urls.size()));
+            }
+        });
         connect(job, &KJob::result, this, [](KJob *finishedJob) {
             if (!finishedJob->error()) {
                 QGuiApplication::clipboard()->clear();
             }
         });
     } else {
-        refreshPaneAfterJob(this, FileOpsService::copy(urls, destination, this));
+        KIO::CopyJob *job = FileOpsService::copy(urls, destination, this);
+        connect(job, &KJob::result, this, [this, destination, urls](KJob *finishedJob) {
+            refreshLocation(destination);
+            if (finishedJob->error()) {
+                emit statusChanged(0, 0, 0, finishedJob->errorString());
+            } else {
+                emit statusChanged(0, 0, 0, QString("Copied %1 item(s).").arg(urls.size()));
+            }
+        });
     }
 }
 
@@ -1561,7 +1621,10 @@ void Pane::deleteSelected() {
 
     if (moveToTrashByDefault) {
         if (confirmDelete && !confirmDeleteAction(this, urls, false)) return;
-        refreshPaneAfterJob(this, FileOpsService::trash(urls, this));
+        refreshPaneAfterJob(
+            this,
+            FileOpsService::trash(urls, this),
+            QString("Moved %1 item(s) to Trash.").arg(urls.size()));
         return;
     }
 
@@ -1576,7 +1639,10 @@ void Pane::deleteSelectedPermanently() {
     const bool confirmDelete = settings.value("advanced/confirmDelete", true).toBool();
     if (confirmDelete && !confirmDeleteAction(this, urls, true)) return;
 
-    refreshPaneAfterJob(this, FileOpsService::del(urls, this));
+    refreshPaneAfterJob(
+        this,
+        FileOpsService::del(urls, this),
+        QString("Deleted %1 item(s).").arg(urls.size()));
 }
 
 void Pane::moveToTrash() {
@@ -1588,7 +1654,10 @@ void Pane::moveToTrash() {
     if (confirmDelete && !confirmDeleteAction(this, urls, false)) return;
 
     // Use KIO::trash for safe deletion (moves to trash)
-    refreshPaneAfterJob(this, FileOpsService::trash(urls, this));
+    refreshPaneAfterJob(
+        this,
+        FileOpsService::trash(urls, this),
+        QString("Moved %1 item(s) to Trash.").arg(urls.size()));
 }
 
 void Pane::renameSelected() {
@@ -1617,10 +1686,14 @@ void Pane::beginInlineRename(QAbstractItemView *view, const QModelIndex &index) 
     // Connect to delegate's closeEditor to restore no-edit state when done
     QAbstractItemDelegate *delegate = view->itemDelegate();
     if (delegate) {
-        disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
-        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [this, view]() {
+        if (m_closeEditorConnection) {
+            disconnect(m_closeEditorConnection);
+        }
+        m_closeEditorConnection = connect(delegate, &QAbstractItemDelegate::closeEditor, this, [this, view]() {
             view->setEditTriggers(QAbstractItemView::NoEditTriggers);
             m_isEditing = false;
+            disconnect(m_closeEditorConnection);
+            m_closeEditorConnection = {};
         }, Qt::QueuedConnection);
     }
 }
@@ -1674,7 +1747,7 @@ void Pane::createNewFolderIn(const QUrl &targetFolder) {
                 }
             });
     }
-    refreshPaneAfterJob(this, job);
+    refreshPaneAfterJob(this, job, QString("Created folder \"%1\".").arg(folderName));
 }
 
 void Pane::createNewFileIn(const QUrl &targetFolder) {
@@ -1716,37 +1789,20 @@ void Pane::createNewFileIn(const QUrl &targetFolder) {
 
 void Pane::goBack() {
     if (!canGoBack()) return;
-    m_historyIndex--;
-    navigateToHistoryEntry(m_history[m_historyIndex]);
+    applyLocation(m_navigationState.goBack());
 }
 
 void Pane::goForward() {
     if (!canGoForward()) return;
-    m_historyIndex++;
-    navigateToHistoryEntry(m_history[m_historyIndex]);
-}
-
-void Pane::navigateToHistoryEntry(const QUrl &url) {
-    currentRoot = url;
-    if (auto *l = dirModel->dirLister()) {
-        l->openUrl(url, KDirLister::OpenUrlFlags(KDirLister::Reload));
-    }
-    if (!url.isLocalFile() && stack->currentWidget() == miller) {
-        viewBox->setCurrentIndex(Details);
-        setViewMode(Details);
-    } else if (miller) {
-        miller->setRootUrl(url);
-    }
-    syncNavigatorLocation(url);
-    emit urlChanged(url);
+    applyLocation(m_navigationState.goForward());
 }
 
 bool Pane::canGoBack() const {
-    return m_historyIndex > 0;
+    return m_navigationState.canGoBack();
 }
 
 bool Pane::canGoForward() const {
-    return m_historyIndex >= 0 && m_historyIndex < m_history.size() - 1;
+    return m_navigationState.canGoForward();
 }
 
 void Pane::generateThumbnail(const QUrl &url) const {
@@ -1898,6 +1954,15 @@ void Pane::updateEmptyFolderOverlay() {
     }
 }
 
+bool Pane::shouldNavigateIntoDirectory(const QUrl &url) const {
+    if (!url.isLocalFile()) {
+        return true;
+    }
+
+    const QFileInfo fi(url.toLocalFile());
+    return !(fi.isSymLink() && !m_followSymlinks);
+}
+
 void Pane::openSelected() {
     if (stack->currentWidget() == miller) {
         const QList<QUrl> urls = miller->getSelectedUrls();
@@ -1908,7 +1973,11 @@ void Pane::openSelected() {
 
         QFileInfo fi(url.toLocalFile());
         if (fi.isDir()) {
-            setRoot(url);
+            if (shouldNavigateIntoDirectory(url)) {
+                setRoot(url);
+            } else {
+                emit statusChanged(0, 0, 0, "Link folder not opened. Enable Follow symbolic links in Settings to navigate into it.");
+            }
         } else {
             FileOpsService::openUrl(url, this);
         }
@@ -1937,6 +2006,21 @@ void Pane::refreshCurrentLocation() {
     if (auto *l = dirModel->dirLister()) {
         l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
     }
+}
+
+void Pane::refreshLocation(const QUrl &url) {
+    if (!url.isValid() || url == currentRoot) {
+        refreshCurrentLocation();
+        return;
+    }
+
+    if (auto *l = dirModel->dirLister()) {
+        l->updateDirectory(url);
+    }
+    if (proxy) {
+        proxy->invalidate();
+    }
+    updateStatus();
 }
 
 QString Pane::adjacentFilePath(const QString &currentPath, int offset) const {
@@ -2109,28 +2193,14 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     QString filePath = url.toLocalFile();
     QFileInfo fi(filePath);
 
-    // Get MIME type
-    static const QMimeDatabase db;
-    QMimeType mimeType = db.mimeTypeForFile(filePath);
-    QString mimeTypeName = mimeType.name();
-
-    auto *dialog = new QDialog(
-        nullptr,
-        Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint
-    );
-    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
-    dialog->setWindowTitle(QString("Open %1 with...").arg(fi.fileName()));
-    dialog->setModal(true);
-    dialog->setWindowModality(Qt::ApplicationModal);
-    dialog->setFixedSize(520, 420);
+    auto *dialog = new QDialog;
+    DialogUtils::prepareModalDialog(
+        dialog,
+        this,
+        QString("Open %1 with...").arg(fi.fileName()),
+        QSize(520, 420));
     dialog->setStyleSheet(
-        "QDialog { "
-            "background-color: rgba(42, 44, 49, 235); "
-            "color: #e8eaed; "
-            "border: 1px solid rgba(95, 102, 114, 200); "
-            "border-radius: 12px; "
-        "}"
-        "QLabel { color: #e8eaed; background: transparent; }"
+        DialogUtils::finderDialogStyleSheet() +
         "QListWidget { "
             "background-color: rgba(34, 36, 41, 240); "
             "color: #f5f7fa; "
@@ -2143,15 +2213,6 @@ void Pane::showOpenWithDialog(const QUrl &url) {
             "background-color: rgba(74, 144, 226, 210); "
             "color: #f5f7fa; "
         "}"
-        "QPushButton { "
-            "background-color: rgba(58, 62, 68, 235); "
-            "color: #e8eaed; "
-            "border: 1px solid #6f7785; "
-            "border-radius: 6px; "
-            "padding: 4px 12px; "
-        "}"
-        "QPushButton:hover { border-color: #8bbcff; }"
-        "QPushButton:pressed { background-color: rgba(72, 77, 85, 245); }"
     );
 
     auto *layout = new QVBoxLayout(dialog);
@@ -2164,43 +2225,12 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     listWidget->setIconSize(QSize(24, 24));
     layout->addWidget(listWidget);
 
-    // Query KDE for applications that can handle this MIME type
-    const KService::List services = KApplicationTrader::queryByMimeType(mimeTypeName);
-
-    for (const KService::Ptr &service : services) {
-        auto *item = new QListWidgetItem(QIcon::fromTheme(service->icon()), service->name());
-        item->setData(Qt::UserRole, service->desktopEntryName());
-        item->setData(Qt::UserRole + 1, QVariant::fromValue(service));
-        item->setToolTip(service->comment());
+    const QList<OpenWithApp> apps = OpenWithService::applicationsForFile(filePath);
+    for (const OpenWithApp &app : apps) {
+        auto *item = new QListWidgetItem(app.icon, app.name);
+        item->setData(Qt::UserRole, app.desktopId);
+        item->setToolTip(app.comment);
         listWidget->addItem(item);
-    }
-
-    // Also query for all applications if the MIME-specific list is short
-    if (services.count() < 5) {
-        listWidget->addItem(new QListWidgetItem("──── Other Applications ────"));
-        listWidget->item(listWidget->count() - 1)->setFlags(Qt::NoItemFlags);
-
-        // Add some common general-purpose apps
-        const QStringList commonApps = {"org.kde.kate", "org.kde.dolphin", "firefox", "org.gnome.gedit"};
-        for (const QString &appId : commonApps) {
-            KService::Ptr service = KService::serviceByDesktopName(appId);
-            if (service && !service->exec().isEmpty()) {
-                // Check if already in list
-                bool found = false;
-                for (int i = 0; i < listWidget->count(); ++i) {
-                    if (listWidget->item(i)->data(Qt::UserRole).toString() == appId) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    auto *item = new QListWidgetItem(QIcon::fromTheme(service->icon()), service->name());
-                    item->setData(Qt::UserRole, service->desktopEntryName());
-                    item->setData(Qt::UserRole + 1, QVariant::fromValue(service));
-                    listWidget->addItem(item);
-                }
-            }
-        }
     }
 
     // Add custom command option
@@ -2228,18 +2258,17 @@ void Pane::showOpenWithDialog(const QUrl &url) {
         if (appId == "custom") {
             dialog->close();
 
-            bool ok;
-            QString customCommand = QInputDialog::getText(
+            QString customCommand;
+            if (!DialogUtils::promptTextInput(
                 this,
                 "Custom Command",
                 "Enter command to open file with:",
-                QLineEdit::Normal,
                 "",
-                &ok
-            );
-            if (!ok || customCommand.isEmpty()) {
+                &customCommand)) {
                 return;
             }
+            customCommand = customCommand.trimmed();
+            if (customCommand.isEmpty()) return;
 
             QStringList parts = QProcess::splitCommand(customCommand);
             if (parts.isEmpty()) {
@@ -2268,12 +2297,10 @@ void Pane::showOpenWithDialog(const QUrl &url) {
             return;
         }
 
-        KService::Ptr service = selectedItem->data(Qt::UserRole + 1).value<KService::Ptr>();
+        const QString desktopId = selectedItem->data(Qt::UserRole).toString();
         dialog->close();
-        if (service) {
-            auto *job = new KIO::ApplicationLauncherJob(service);
-            job->setUrls({url});
-            job->start();
+        if (!OpenWithService::launch(desktopId, {url}, this)) {
+            QMessageBox::warning(this, "Error", QString("Failed to open file with %1").arg(selectedItem->text()));
         }
     };
 
@@ -2281,14 +2308,7 @@ void Pane::showOpenWithDialog(const QUrl &url) {
     connect(buttonBox, &QDialogButtonBox::rejected, dialog, &QDialog::close);
     connect(listWidget, &QListWidget::itemDoubleClicked, dialog, runSelection);
 
-    const QRect parentFrame = window()->frameGeometry();
-    const QPoint centeredTopLeft = parentFrame.center()
-        - QPoint(dialog->width() / 2, dialog->height() / 2);
-    dialog->move(centeredTopLeft);
-    dialog->show();
-    dialog->raise();
-    dialog->activateWindow();
-    listWidget->setFocus(Qt::OtherFocusReason);
+    DialogUtils::presentDialog(dialog, listWidget);
 }
 
 void Pane::compressSelected() {
@@ -2635,14 +2655,11 @@ void Pane::duplicateSelected() {
     auto runNext = std::make_shared<std::function<void()>>();
     *runNext = [this, state, runNext]() {
         if (state->index >= state->ops.size()) {
-            if (auto *l = dirModel->dirLister()) {
-                l->openUrl(currentRoot, KDirLister::OpenUrlFlags(KDirLister::Reload));
-            }
+            refreshCurrentLocation();
 
             const int successCount = state->ops.size() - state->failures;
             if (state->failures == 0) {
-                QMessageBox::information(this, "Duplicate Complete",
-                    QString("Successfully duplicated %1 item(s).").arg(successCount));
+                emit statusChanged(0, 0, 0, QString("Duplicated %1 item(s).").arg(successCount));
             } else {
                 QMessageBox::warning(this, "Duplicate Completed With Errors",
                     QString("Duplicated %1 of %2 item(s).\n\nFirst error: %3")
@@ -2654,7 +2671,7 @@ void Pane::duplicateSelected() {
         }
 
         const auto op = state->ops.at(state->index++);
-        KIO::CopyJob *job = KIO::copyAs(op.first, op.second, KIO::HideProgressInfo);
+        KIO::CopyJob *job = FileOpsService::copyAs(op.first, op.second, this);
         connect(job, &KJob::result, this, [state, runNext](KJob *finishedJob) {
             if (finishedJob->error()) {
                 state->failures++;

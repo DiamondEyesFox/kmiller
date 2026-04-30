@@ -157,6 +157,7 @@ void SettingsDialog::setupViewTab() {
     m_showFileExtensions = new QCheckBox(tr("Always show file extensions"));
     m_showFileExtensions->setToolTip(tr("Show file extensions even for known file types"));
     fileLayout->addWidget(m_showFileExtensions);
+    m_showFileExtensions->hide();
     
     // Miller columns specific
     auto *millerLayout = new QHBoxLayout;

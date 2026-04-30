@@ -17,7 +17,7 @@ else()
   if(_GITVER)
     set(_VER "${_GITVER}")
   else()
-    set(_VER "5.25.3")  # release fallback
+    set(_VER "5.25.4")  # release fallback
   endif()
 endif()
 
@@ -27,7 +27,7 @@ string(REGEX MATCH "^[0-9]+(\\.[0-9]+){0,2}" _VER_SEMVER "${_VER}")
 if(_VER_SEMVER)
   set(_VER "${_VER_SEMVER}")
 else()
-  set(_VER "5.25.3")
+  set(_VER "5.25.4")
 endif()
 
 project(KMiller VERSION ${_VER} LANGUAGES CXX)
@@ -76,6 +76,8 @@ add_executable(kmiller
     src/PaneNavigationState.h
     src/DialogUtils.cpp
     src/DialogUtils.h
+    src/OpenWithService.cpp
+    src/OpenWithService.h
     src/ArchiveService.cpp
     src/ArchiveService.h
 )

@@ -20,6 +20,10 @@ ui_*.h
 # Log files
 *.log
 
+# Python helper caches
+__pycache__/
+*.py[cod]
+
 # IDE files
 .vscode/
 .idea/

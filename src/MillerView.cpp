@@ -66,6 +66,7 @@ void MillerView::addColumn(const QUrl &url) {
     view->setSelectionMode(QAbstractItemView::ExtendedSelection); // allow multi
     view->setSelectionBehavior(QAbstractItemView::SelectRows);
     view->setEditTriggers(QAbstractItemView::NoEditTriggers);     // no rename on dblclick
+    view->setMinimumWidth(m_columnWidth);
 
     // Enable drag and drop between columns
     view->setDragEnabled(true);
@@ -161,6 +162,9 @@ void MillerView::addColumn(const QUrl &url) {
 
         QFileInfo fi(p);
         if (fi.isDir()) {
+            if (fi.isSymLink() && !m_followSymlinks) {
+                return;
+            }
             addColumn(QUrl::fromLocalFile(p));
         } else {
             FileOpsService::openUrl(QUrl::fromLocalFile(p), this);
@@ -202,6 +206,9 @@ void MillerView::addColumn(const QUrl &url) {
 
         QFileInfo fi(path);
         if (fi.isDir()) {
+            if (fi.isSymLink() && !m_followSymlinks) {
+                return;
+            }
             pruneColumnsAfter(view);
             addColumn(QUrl::fromLocalFile(path));
         }
@@ -391,10 +398,14 @@ void MillerView::beginInlineRename(QListView *view, const QModelIndex &idx) {
 
     QAbstractItemDelegate *delegate = view->itemDelegate();
     if (delegate) {
-        disconnect(delegate, &QAbstractItemDelegate::closeEditor, nullptr, nullptr);
-        connect(delegate, &QAbstractItemDelegate::closeEditor, this, [this, view]() {
+        if (m_closeEditorConnection) {
+            disconnect(m_closeEditorConnection);
+        }
+        m_closeEditorConnection = connect(delegate, &QAbstractItemDelegate::closeEditor, this, [this, view]() {
             view->setEditTriggers(QAbstractItemView::NoEditTriggers);
             m_isEditing = false;
+            disconnect(m_closeEditorConnection);
+            m_closeEditorConnection = {};
         }, Qt::QueuedConnection);
     }
 }
@@ -539,6 +550,13 @@ void MillerView::setShowHiddenFiles(bool show) {
 
 void MillerView::setColumnWidth(int width) {
     m_columnWidth = width;
+    for (QListView *view : columns) {
+        view->setMinimumWidth(m_columnWidth);
+    }
+}
+
+void MillerView::setFollowSymlinks(bool follow) {
+    m_followSymlinks = follow;
 }
 
 void MillerView::setSort(int column, Qt::SortOrder order) {

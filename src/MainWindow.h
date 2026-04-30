@@ -20,6 +20,7 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     MainWindow(QWidget *parent=nullptr);
+    explicit MainWindow(const QUrl &initialUrl, QWidget *parent=nullptr);
     
     // Public getters for current state (for SettingsDialog)
     bool isToolbarVisible() const { return actShowToolbar->isChecked(); }

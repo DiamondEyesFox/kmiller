@@ -36,7 +36,9 @@
 
 #include <KIO/FileUndoManager>
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
+MainWindow::MainWindow(QWidget *parent) : MainWindow(QUrl::fromLocalFile("/"), parent) {}
+
+MainWindow::MainWindow(const QUrl &initialUrl, QWidget *parent) : QMainWindow(parent) {
     resize(1500, 900);
     setWindowTitle(QString("KMiller %1").arg(KMILLER_VERSION_STR));
     splitter = new QSplitter(this);
@@ -191,7 +193,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         saveSettings();
     });
     
-    addInitialTab(QUrl::fromLocalFile("/"));
+    addInitialTab(initialUrl.isValid() ? initialUrl : QUrl::fromLocalFile("/"));
 
     // Load saved settings
     loadSettings();

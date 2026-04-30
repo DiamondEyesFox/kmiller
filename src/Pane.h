@@ -1,9 +1,12 @@
 #pragma once
+#include "PaneNavigationState.h"
+
 #include <QWidget>
 #include <QUrl>
 #include <QPoint>
 #include <QAbstractProxyModel>
 #include <QElapsedTimer>
+#include <QMetaObject>
 #include <QPersistentModelIndex>
 #include <QPointer>
 
@@ -88,6 +91,7 @@ public:
     void setShowFileExtensions(bool show);
     void setMillerColumnWidth(int width);
     void setFollowSymlinks(bool follow);
+    bool canNavigateIntoDirectoryForTesting(const QUrl &url) const { return shouldNavigateIntoDirectory(url); }
     
     // Status updates
     void updateStatus();
@@ -127,7 +131,7 @@ protected:
 
 private:
     void syncNavigatorLocation(const QUrl &url);
-    void navigateToHistoryEntry(const QUrl &url);
+    void applyLocation(const QUrl &url);
     void applyIconSize(int px);
     QUrl urlForIndex(const QModelIndex &proxyIndex) const;
     QList<QUrl> getSelectedUrls() const;
@@ -153,6 +157,8 @@ private:
     bool isClipboardCutOperation() const;
     void openTerminalAt(const QUrl &targetFolder);
     void updateEmptyFolderOverlay();
+    bool shouldNavigateIntoDirectory(const QUrl &url) const;
+    void refreshLocation(const QUrl &url);
 
     QToolBar *tb = nullptr;
     QComboBox *viewBox = nullptr;
@@ -191,15 +197,14 @@ private:
     bool m_showFileExtensions = true;
     bool m_followSymlinks = false;
     
-    // Navigation history
-    QList<QUrl> m_history;
-    int m_historyIndex = -1;
+    PaneNavigationState m_navigationState;
 
     // Initialization state
     bool m_viewInitialized = false;
 
     // Inline rename editing state (guards eventFilter from intercepting editor keys)
     bool m_isEditing = false;
+    QMetaObject::Connection m_closeEditorConnection;
 
     // Ctrl+L editable path bar toggle
     bool m_pathBarEditRequested = false;
